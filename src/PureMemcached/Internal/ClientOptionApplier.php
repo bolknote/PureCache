@@ -245,6 +245,7 @@ final class ClientOptionApplier
         return \in_array($option, [
             MemcachedConstants::OPT_TCP_NODELAY,
             MemcachedConstants::OPT_TCP_KEEPALIVE,
+            MemcachedConstants::OPT_NO_BLOCK,
             MemcachedConstants::OPT_VERIFY_KEY,
             MemcachedConstants::OPT_HASH_WITH_PREFIX_KEY,
             MemcachedConstants::OPT_NOREPLY,
@@ -280,7 +281,6 @@ final class ClientOptionApplier
         return \in_array($option, [
             MemcachedConstants::OPT_BINARY_PROTOCOL,
             MemcachedConstants::OPT_USE_UDP,
-            MemcachedConstants::OPT_NO_BLOCK,
             MemcachedConstants::OPT_SORT_HOSTS,
             MemcachedConstants::OPT_REMOVE_FAILED_SERVERS,
             MemcachedConstants::OPT_RANDOMIZE_REPLICA_READ,

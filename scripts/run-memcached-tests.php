@@ -143,13 +143,32 @@ function findMemcachedBinary(): ?string
 function phpCommandPrefix(string $testTarget): array
 {
     $command = [\PHP_BINARY];
+
+    if (in_array($testTarget, ['tests/Integration', 'tests/Parity'], true)) {
+        $command = addOptionalExtension($command, 'igbinary', 'IGBINARY_PECL_EXTENSION');
+    }
+
     if ('tests/Parity' !== $testTarget || extension_loaded('memcached')) {
         return $command;
     }
 
-    $extensionPath = getenv('MEMCACHED_PECL_EXTENSION');
+    return addOptionalExtension($command, 'memcached', 'MEMCACHED_PECL_EXTENSION');
+}
+
+/**
+ * @param non-empty-list<string> $command
+ *
+ * @return non-empty-list<string>
+ */
+function addOptionalExtension(array $command, string $extension, string $envName): array
+{
+    if (extension_loaded($extension)) {
+        return $command;
+    }
+
+    $extensionPath = getenv($envName);
     if (!is_string($extensionPath) || '' === $extensionPath) {
-        $extensionPath = ini_get('extension_dir').\DIRECTORY_SEPARATOR.'memcached.so';
+        $extensionPath = ini_get('extension_dir').\DIRECTORY_SEPARATOR.$extension.'.so';
     }
 
     if (is_file($extensionPath)) {

@@ -10,6 +10,13 @@ namespace PureMemcached\Internal;
 final class TextProtocolClient
 {
     /**
+     * Metadump streams reliably terminate with END from this release onward (see memcached
+     * release notes around 1.5.6). Older releases used LF-only item lines without a
+     * dependable terminator, so we only use metadump when the server reports >= this.
+     */
+    private const METADUMP_MIN_VERSION = '1.5.6';
+
+    /**
      * @return array<string, int|float|string>|false
      */
     public static function stats(StreamConnection $c, ?string $type = null): array|false
@@ -70,9 +77,115 @@ final class TextProtocolClient
     }
 
     /**
+     * Lists keys visible to the server using {@code lru_crawler metadump all} when the
+     * reported memcached version is >= {@see METADUMP_MIN_VERSION}, otherwise (or on
+     * metadump refusal) falls back to {@code stats items} / {@code stats cachedump}.
+     *
      * @return list<string>|false
      */
     public static function getAllKeys(StreamConnection $c): array|false
+    {
+        $verRaw = self::version($c);
+        $verNorm = false !== $verRaw ? self::normalizeMemcachedVersion($verRaw) : null;
+        $tryMetadump = null === $verNorm || version_compare($verNorm, self::METADUMP_MIN_VERSION, '>=');
+
+        if ($tryMetadump) {
+            $meta = self::getAllKeysViaMetadump($c);
+            if (null !== $meta) {
+                return $meta;
+            }
+        }
+
+        return self::getAllKeysViaCachedump($c);
+    }
+
+    private static function normalizeMemcachedVersion(string $raw): ?string
+    {
+        $t = trim($raw);
+        if (1 === preg_match('/^(\d+\.\d+\.\d+)/', $t, $m)) {
+            return $m[1];
+        }
+        if (1 === preg_match('/^(\d+\.\d+)\b/', $t, $m)) {
+            return $m[1].'.0';
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<string>|false|null array keys on success, null to fall back to cachedump, false on fatal protocol/read errors
+     */
+    private static function getAllKeysViaMetadump(StreamConnection $c): array|false|null
+    {
+        $c->write("lru_crawler metadump all\r\n");
+        $line = $c->readLineFlexible();
+        while ('OK' === $line) {
+            $line = $c->readLineFlexible();
+        }
+
+        if (str_starts_with($line, 'NOTSTARTED')) {
+            return [];
+        }
+
+        if (self::metadumpFirstLineShouldFallback($line)) {
+            return null;
+        }
+
+        if ('END' === $line) {
+            return [];
+        }
+
+        $keys = [];
+        while (true) {
+            $k = self::extractMetadumpKey($line);
+            if (null !== $k) {
+                $keys[] = $k;
+            } elseif ('' !== trim($line)) {
+                if (str_starts_with($line, 'CLIENT_ERROR') || str_starts_with($line, 'SERVER_ERROR') || str_starts_with($line, 'ERROR')) {
+                    return false;
+                }
+
+                return false;
+            }
+
+            $line = $c->readLineFlexible();
+            if ('END' === $line) {
+                return $keys;
+            }
+
+            if (self::metadumpFirstLineShouldFallback($line)) {
+                return false;
+            }
+        }
+    }
+
+    private static function metadumpFirstLineShouldFallback(string $line): bool
+    {
+        return str_starts_with($line, 'BUSY')
+            || str_starts_with($line, 'BADCLASS')
+            || str_starts_with($line, 'CLIENT_ERROR')
+            || str_starts_with($line, 'SERVER_ERROR')
+            || ('' !== $line && str_starts_with($line, 'ERROR'));
+    }
+
+    private static function extractMetadumpKey(string $line): ?string
+    {
+        foreach (explode(' ', $line) as $tok) {
+            if ('' === $tok) {
+                continue;
+            }
+            if (str_starts_with($tok, 'key=')) {
+                return rawurldecode(substr($tok, 4));
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<string>|false
+     */
+    private static function getAllKeysViaCachedump(StreamConnection $c): array|false
     {
         $c->write("stats items\r\n");
         $slabs = [];

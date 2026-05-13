@@ -1981,6 +1981,7 @@ final class MemcachedClient extends MemcachedConstants
             self::OPT_BUFFER_WRITES,
             self::OPT_HASH_WITH_PREFIX_KEY,
             self::OPT_LIBKETAMA_COMPATIBLE,
+            self::OPT_NO_BLOCK,
             self::OPT_NOREPLY,
             self::OPT_TCP_KEEPALIVE,
             self::OPT_TCP_NODELAY,

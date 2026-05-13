@@ -47,11 +47,13 @@ final class PeclParityTest extends TestCase
             'OPT_SERIALIZER',
             'OPT_PREFIX_KEY',
             'OPT_HASH_WITH_PREFIX_KEY',
+            'OPT_NO_BLOCK',
             'OPT_TCP_KEEPALIVE',
             'OPT_SOCKET_SEND_SIZE',
             'OPT_SOCKET_RECV_SIZE',
             'OPT_USER_FLAGS',
             'SERIALIZER_PHP',
+            'SERIALIZER_IGBINARY',
         ] as $constant) {
             self::assertSame(\Memcached::{$constant}, MemcachedClient::{$constant}, $constant);
         }
@@ -65,6 +67,9 @@ final class PeclParityTest extends TestCase
                 'tcpNoDelayDefault' => $client->getOption(\Memcached::OPT_TCP_NODELAY),
                 'tcpNoDelaySet' => $client->setOption(\Memcached::OPT_TCP_NODELAY, true),
                 'tcpNoDelayAfter' => $client->getOption(\Memcached::OPT_TCP_NODELAY),
+                'noBlockDefault' => $client->getOption(\Memcached::OPT_NO_BLOCK),
+                'noBlockSet' => $client->setOption(\Memcached::OPT_NO_BLOCK, true),
+                'noBlockAfter' => $client->getOption(\Memcached::OPT_NO_BLOCK),
                 'keepaliveDefault' => $client->getOption(\Memcached::OPT_TCP_KEEPALIVE),
                 'keepaliveSet' => $client->setOption(\Memcached::OPT_TCP_KEEPALIVE, true),
                 'keepaliveAfter' => $client->getOption(\Memcached::OPT_TCP_KEEPALIVE),
@@ -78,6 +83,9 @@ final class PeclParityTest extends TestCase
                 'tcpNoDelayDefault' => $client->getOption(MemcachedClient::OPT_TCP_NODELAY),
                 'tcpNoDelaySet' => $client->setOption(MemcachedClient::OPT_TCP_NODELAY, true),
                 'tcpNoDelayAfter' => $client->getOption(MemcachedClient::OPT_TCP_NODELAY),
+                'noBlockDefault' => $client->getOption(MemcachedClient::OPT_NO_BLOCK),
+                'noBlockSet' => $client->setOption(MemcachedClient::OPT_NO_BLOCK, true),
+                'noBlockAfter' => $client->getOption(MemcachedClient::OPT_NO_BLOCK),
                 'keepaliveDefault' => $client->getOption(MemcachedClient::OPT_TCP_KEEPALIVE),
                 'keepaliveSet' => $client->setOption(MemcachedClient::OPT_TCP_KEEPALIVE, true),
                 'keepaliveAfter' => $client->getOption(MemcachedClient::OPT_TCP_KEEPALIVE),
@@ -86,6 +94,92 @@ final class PeclParityTest extends TestCase
                 'recvSizeSet' => $client->setOption(MemcachedClient::OPT_SOCKET_RECV_SIZE, 8192),
                 'recvSizeAfter' => $client->getOption(MemcachedClient::OPT_SOCKET_RECV_SIZE),
             ],
+        );
+    }
+
+    public function testPeclStyleSetOptionsParity(): void
+    {
+        $this->assertParity(
+            static fn (\Memcached $client, string $prefix): array => [
+                'setOptions' => $client->setOptions([
+                    \Memcached::OPT_PREFIX_KEY => $prefix,
+                    \Memcached::OPT_NO_BLOCK => true,
+                    \Memcached::OPT_RECV_TIMEOUT => 3000,
+                    \Memcached::OPT_SEND_TIMEOUT => 1000,
+                    \Memcached::OPT_TCP_NODELAY => true,
+                    \Memcached::OPT_COMPRESSION => true,
+                    \Memcached::OPT_SERIALIZER => \Memcached::SERIALIZER_IGBINARY,
+                    \Memcached::OPT_LIBKETAMA_COMPATIBLE => true,
+                ]),
+                'prefix' => $client->getOption(\Memcached::OPT_PREFIX_KEY),
+                'noBlock' => $client->getOption(\Memcached::OPT_NO_BLOCK),
+                'recvTimeout' => $client->getOption(\Memcached::OPT_RECV_TIMEOUT),
+                'sendTimeout' => $client->getOption(\Memcached::OPT_SEND_TIMEOUT),
+                'tcpNoDelay' => $client->getOption(\Memcached::OPT_TCP_NODELAY),
+                'compression' => $client->getOption(\Memcached::OPT_COMPRESSION),
+                'serializer' => $client->getOption(\Memcached::OPT_SERIALIZER),
+                'libketama' => $client->getOption(\Memcached::OPT_LIBKETAMA_COMPATIBLE),
+            ],
+            static fn (MemcachedClient $client, string $prefix): array => [
+                'setOptions' => $client->setOptions([
+                    MemcachedClient::OPT_PREFIX_KEY => $prefix,
+                    MemcachedClient::OPT_NO_BLOCK => true,
+                    MemcachedClient::OPT_RECV_TIMEOUT => 3000,
+                    MemcachedClient::OPT_SEND_TIMEOUT => 1000,
+                    MemcachedClient::OPT_TCP_NODELAY => true,
+                    MemcachedClient::OPT_COMPRESSION => true,
+                    MemcachedClient::OPT_SERIALIZER => MemcachedClient::SERIALIZER_IGBINARY,
+                    MemcachedClient::OPT_LIBKETAMA_COMPATIBLE => true,
+                ]),
+                'prefix' => $client->getOption(MemcachedClient::OPT_PREFIX_KEY),
+                'noBlock' => $client->getOption(MemcachedClient::OPT_NO_BLOCK),
+                'recvTimeout' => $client->getOption(MemcachedClient::OPT_RECV_TIMEOUT),
+                'sendTimeout' => $client->getOption(MemcachedClient::OPT_SEND_TIMEOUT),
+                'tcpNoDelay' => $client->getOption(MemcachedClient::OPT_TCP_NODELAY),
+                'compression' => $client->getOption(MemcachedClient::OPT_COMPRESSION),
+                'serializer' => $client->getOption(MemcachedClient::OPT_SERIALIZER),
+                'libketama' => $client->getOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE),
+            ],
+        );
+    }
+
+    public function testIgbinarySerializerRoundTripParity(): void
+    {
+        $this->assertParity(
+            static function (\Memcached $client, string $prefix): array {
+                $key = $prefix.'igbinary';
+                $client->setOption(\Memcached::OPT_SERIALIZER, \Memcached::SERIALIZER_IGBINARY);
+                $value = [
+                    'list' => [1, 2, 3],
+                    'assoc' => ['enabled' => true, 'name' => 'igbinary'],
+                    'nested' => [['a' => 1], ['b' => null]],
+                ];
+
+                return [
+                    'serializer' => $client->getOption(\Memcached::OPT_SERIALIZER),
+                    'set' => $client->set($key, $value, 60),
+                    'setCode' => $client->getResultCode(),
+                    'get' => $client->get($key),
+                    'getCode' => $client->getResultCode(),
+                ];
+            },
+            static function (MemcachedClient $client, string $prefix): array {
+                $key = $prefix.'igbinary';
+                $client->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_IGBINARY);
+                $value = [
+                    'list' => [1, 2, 3],
+                    'assoc' => ['enabled' => true, 'name' => 'igbinary'],
+                    'nested' => [['a' => 1], ['b' => null]],
+                ];
+
+                return [
+                    'serializer' => $client->getOption(MemcachedClient::OPT_SERIALIZER),
+                    'set' => $client->set($key, $value, 60),
+                    'setCode' => $client->getResultCode(),
+                    'get' => $client->get($key),
+                    'getCode' => $client->getResultCode(),
+                ];
+            },
         );
     }
 

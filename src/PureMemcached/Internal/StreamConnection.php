@@ -239,21 +239,65 @@ final class StreamConnection
                 return $line;
             }
 
-            $socket = $this->socketResource();
-            $chunk = fread($socket, 8192);
-            if (false === $chunk || '' === $chunk) {
-                $meta = stream_get_meta_data($socket);
-                $this->close();
-                if ($meta['timed_out']) {
-                    throw new ConnectionException('Read timeout');
-                }
+            $this->fillReadBufferChunk();
+        }
+    }
 
-                $err = error_get_last();
-                throw new ConnectionException('Connection closed while reading line: '.($err['message'] ?? 'unknown'));
+    /**
+     * Like {@see readLine()}, but also accepts a lone LF terminator. Memcached's
+     * {@code lru_crawler metadump} emits LF-terminated lines; the rest of the text
+     * protocol uses CRLF.
+     */
+    public function readLineFlexible(): string
+    {
+        $this->flushWrite();
+        $this->connect();
+        while (true) {
+            $buf = $this->readBuffer;
+            $off = $this->readOffset;
+            $crlfPos = strpos($buf, "\r\n", $off);
+            $lfPos = strpos($buf, "\n", $off);
+
+            if (false !== $crlfPos && (false === $lfPos || $crlfPos < $lfPos)) {
+                $line = substr($buf, $off, $crlfPos - $off);
+                $this->readOffset = $crlfPos + 2;
+                $this->compactBuffer();
+
+                return $line;
             }
 
-            $this->readBuffer .= $chunk;
+            if (false !== $lfPos) {
+                $line = substr($buf, $off, $lfPos - $off);
+                if (str_ends_with($line, "\r")) {
+                    $line = substr($line, 0, -1);
+                }
+
+                $this->readOffset = $lfPos + 1;
+                $this->compactBuffer();
+
+                return $line;
+            }
+
+            $this->fillReadBufferChunk();
         }
+    }
+
+    private function fillReadBufferChunk(): void
+    {
+        $socket = $this->socketResource();
+        $chunk = fread($socket, 8192);
+        if (false === $chunk || '' === $chunk) {
+            $meta = stream_get_meta_data($socket);
+            $this->close();
+            if ($meta['timed_out']) {
+                throw new ConnectionException('Read timeout');
+            }
+
+            $err = error_get_last();
+            throw new ConnectionException('Connection closed while reading line: '.($err['message'] ?? 'unknown'));
+        }
+
+        $this->readBuffer .= $chunk;
     }
 
     public function readExact(int $length): string

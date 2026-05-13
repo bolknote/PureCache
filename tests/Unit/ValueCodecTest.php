@@ -150,6 +150,29 @@ final class ValueCodecTest extends TestCase
         self::assertSame(1, $decoded->a);
     }
 
+    public function testIgbinaryRoundTripWhenExtensionIsLoaded(): void
+    {
+        if (!\function_exists('igbinary_serialize')) {
+            self::markTestSkipped('igbinary is not available');
+        }
+
+        $value = ['a' => 1, 'nested' => ['b' => true, 'c' => null]];
+
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_IGBINARY,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+        );
+
+        self::assertSame(ValueCodec::TYPE_IGBINARY, ValueCodec::getType($flags));
+        self::assertSame($value, ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_IGBINARY));
+    }
+
     public function testCompressedZlibRoundTrip(): void
     {
         if (!\function_exists('gzcompress')) {

@@ -176,7 +176,8 @@ final class ProtocolReaderTest extends TestCase
     public function testTextProtocolGetAllKeysReadsCachedumpItems(): void
     {
         [$connection, $server] = $this->socketConnection(
-            "STAT items:1:number 1\r\nEND\r\n"
+            "VERSION 1.4.35\r\n"
+            ."STAT items:1:number 1\r\nEND\r\n"
             ."ITEM cached-key [1 b; 0 s]\r\nEND\r\n",
         );
 
@@ -187,11 +188,93 @@ final class ProtocolReaderTest extends TestCase
     public function testTextProtocolGetAllKeysStopsOnCachedumpErrors(): void
     {
         [$connection, $server] = $this->socketConnection(
-            "STAT items:1:number 1\r\nEND\r\n"
+            "VERSION 1.4.35\r\n"
+            ."STAT items:1:number 1\r\nEND\r\n"
             ."SERVER_ERROR unavailable\r\n",
         );
 
         self::assertFalse(TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testTextProtocolGetAllKeysSkipsMetadumpBelow156(): void
+    {
+        [$connection, $server] = $this->socketConnection(
+            "VERSION 1.5.5\r\n"
+            ."STAT items:1:number 1\r\nEND\r\n"
+            ."ITEM cached-key [1 b; 0 s]\r\nEND\r\n",
+        );
+
+        self::assertSame(['cached-key'], TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testTextProtocolGetAllKeysUsesMetadumpOnNewMemcached(): void
+    {
+        [$connection, $server] = $this->socketConnection(
+            "VERSION 1.6.0\r\n"
+            ."key=cached-key exp=-1 la=1 cas=1 fetch=no cls=1 size=80\n"
+            ."END\r\n",
+        );
+
+        self::assertSame(['cached-key'], TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testTextProtocolGetAllKeysMetadumpDecodesUriEncodedKey(): void
+    {
+        [$connection, $server] = $this->socketConnection(
+            "VERSION 1.6.0\r\n"
+            ."key=my%20key exp=-1 la=1 cas=1 fetch=no cls=1 size=80\n"
+            ."END\r\n",
+        );
+
+        self::assertSame(['my key'], TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testTextProtocolGetAllKeysMetadumpNotstartedReturnsEmpty(): void
+    {
+        [$connection, $server] = $this->socketConnection(
+            "VERSION 1.6.0\r\n"
+            ."NOTSTARTED no items to crawl\r\n",
+        );
+
+        self::assertSame([], TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testTextProtocolGetAllKeysMetadumpBusyFallsBackToCachedump(): void
+    {
+        [$connection, $server] = $this->socketConnection(
+            "VERSION 1.6.0\r\n"
+            ."BUSY currently processing crawler request\r\n"
+            ."STAT items:1:number 1\r\nEND\r\n"
+            ."ITEM cached-key [1 b; 0 s]\r\nEND\r\n",
+        );
+
+        self::assertSame(['cached-key'], TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testTextProtocolGetAllKeysMetadumpNotAllowedFallsBackToCachedump(): void
+    {
+        [$connection, $server] = $this->socketConnection(
+            "VERSION 1.6.0\r\n"
+            ."ERROR metadump not allowed\r\n"
+            ."STAT items:1:number 1\r\nEND\r\n"
+            ."ITEM cached-key [1 b; 0 s]\r\nEND\r\n",
+        );
+
+        self::assertSame(['cached-key'], TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testReadLineFlexibleAcceptsLfAndCrlf(): void
+    {
+        [$connection, $server] = $this->socketConnection("alpha\nbeta\r\n");
+        self::assertSame('alpha', $connection->readLineFlexible());
+        self::assertSame('beta', $connection->readLineFlexible());
         fclose($server);
     }
 }

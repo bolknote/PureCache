@@ -260,6 +260,9 @@ final class MemcachedClientStateTest extends TestCase
         self::assertFalse($client->setOption(MemcachedClient::OPT_BINARY_PROTOCOL, true));
         self::assertSame(MemcachedClient::RES_NOT_SUPPORTED, $client->getResultCode());
         self::assertFalse($client->getOption(MemcachedClient::OPT_BINARY_PROTOCOL));
+        self::assertSame(0, $client->getOption(MemcachedClient::OPT_NO_BLOCK));
+        self::assertTrue($client->setOption(MemcachedClient::OPT_NO_BLOCK, true));
+        self::assertSame(1, $client->getOption(MemcachedClient::OPT_NO_BLOCK));
         self::assertTrue($client->setOption(MemcachedClient::OPT_NOREPLY, true));
         self::assertSame(1, $client->getOption(MemcachedClient::OPT_NOREPLY));
         self::assertSame(0, $client->getOption(MemcachedClient::OPT_TCP_KEEPALIVE));
@@ -426,7 +429,6 @@ final class MemcachedClientStateTest extends TestCase
 
         foreach ([
             MemcachedClient::OPT_USE_UDP,
-            MemcachedClient::OPT_NO_BLOCK,
             MemcachedClient::OPT_SORT_HOSTS,
             MemcachedClient::OPT_REMOVE_FAILED_SERVERS,
             MemcachedClient::OPT_RANDOMIZE_REPLICA_READ,
@@ -472,6 +474,7 @@ final class MemcachedClientStateTest extends TestCase
         foreach ([
             MemcachedClient::OPT_TCP_NODELAY,
             MemcachedClient::OPT_TCP_KEEPALIVE,
+            MemcachedClient::OPT_NO_BLOCK,
             MemcachedClient::OPT_VERIFY_KEY,
             MemcachedClient::OPT_HASH_WITH_PREFIX_KEY,
             MemcachedClient::OPT_NOREPLY,
@@ -641,6 +644,31 @@ final class MemcachedClientStateTest extends TestCase
         self::assertSame('ok:', $client->getOption(MemcachedClient::OPT_PREFIX_KEY));
     }
 
+    public function testSetOptionsAcceptsPeclNoBlockConfigurationShape(): void
+    {
+        $client = new MemcachedClient();
+
+        self::assertTrue($client->setOptions([
+            MemcachedClient::OPT_PREFIX_KEY => 'cfg:',
+            MemcachedClient::OPT_NO_BLOCK => true,
+            MemcachedClient::OPT_RECV_TIMEOUT => 3000,
+            MemcachedClient::OPT_SEND_TIMEOUT => 1000,
+            MemcachedClient::OPT_TCP_NODELAY => true,
+            MemcachedClient::OPT_COMPRESSION => true,
+            MemcachedClient::OPT_SERIALIZER => MemcachedClient::SERIALIZER_PHP,
+            MemcachedClient::OPT_LIBKETAMA_COMPATIBLE => true,
+        ]));
+
+        self::assertSame('cfg:', $client->getOption(MemcachedClient::OPT_PREFIX_KEY));
+        self::assertSame(1, $client->getOption(MemcachedClient::OPT_NO_BLOCK));
+        self::assertSame(3000, $client->getOption(MemcachedClient::OPT_RECV_TIMEOUT));
+        self::assertSame(1000, $client->getOption(MemcachedClient::OPT_SEND_TIMEOUT));
+        self::assertSame(1, $client->getOption(MemcachedClient::OPT_TCP_NODELAY));
+        self::assertTrue($client->getOption(MemcachedClient::OPT_COMPRESSION));
+        self::assertSame(MemcachedClient::SERIALIZER_PHP, $client->getOption(MemcachedClient::OPT_SERIALIZER));
+        self::assertSame(1, $client->getOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE));
+    }
+
     public function testSimpleLocalStateOperations(): void
     {
         $client = new MemcachedClient();
@@ -770,5 +798,18 @@ final class MemcachedClientStateTest extends TestCase
         if (!$tested) {
             self::markTestSkipped('optional serializers are available');
         }
+    }
+
+    public function testAvailableIgbinarySerializerCanBeSelected(): void
+    {
+        if (!\extension_loaded('igbinary')) {
+            self::markTestSkipped('igbinary is not loaded');
+        }
+
+        $client = new MemcachedClient();
+
+        self::assertTrue($client->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_IGBINARY));
+        self::assertSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
+        self::assertSame(MemcachedClient::SERIALIZER_IGBINARY, $client->getOption(MemcachedClient::OPT_SERIALIZER));
     }
 }

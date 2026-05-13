@@ -650,6 +650,27 @@ final class MemcachedIntegrationTest extends TestCase
         self::assertSame(['json' => ['ok' => true]], $m->get($key));
     }
 
+    public function testIgbinarySerializerRoundTripOverWire(): void
+    {
+        if (!\extension_loaded('igbinary')) {
+            self::markTestSkipped('igbinary is not loaded');
+        }
+
+        $m = $this->client();
+        self::assertTrue($m->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_IGBINARY));
+
+        $key = $this->key('pure_igbinary');
+        $value = [
+            'list' => [1, 2, 3],
+            'assoc' => ['enabled' => true, 'name' => 'igbinary'],
+            'nested' => [['a' => 1], ['b' => null]],
+        ];
+
+        self::assertTrue($m->set($key, $value, 60));
+        self::assertSame($value, $m->get($key));
+        self::assertSame(MemcachedClient::SERIALIZER_IGBINARY, $m->getOption(MemcachedClient::OPT_SERIALIZER));
+    }
+
     public function testCompressedValueRoundTripOverWire(): void
     {
         if (!\function_exists('gzcompress')) {
@@ -710,6 +731,28 @@ final class MemcachedIntegrationTest extends TestCase
 
         self::assertTrue($m->set($key, 'value', 60));
         self::assertSame('value', $m->get($key));
+    }
+
+    public function testPeclStyleConfigurationWithNoBlockStillStoresValues(): void
+    {
+        $m = $this->client();
+
+        self::assertTrue($m->setOptions([
+            MemcachedClient::OPT_PREFIX_KEY => 'cfg:',
+            MemcachedClient::OPT_NO_BLOCK => true,
+            MemcachedClient::OPT_RECV_TIMEOUT => 3000,
+            MemcachedClient::OPT_SEND_TIMEOUT => 1000,
+            MemcachedClient::OPT_TCP_NODELAY => true,
+            MemcachedClient::OPT_COMPRESSION => true,
+            MemcachedClient::OPT_SERIALIZER => MemcachedClient::SERIALIZER_PHP,
+            MemcachedClient::OPT_LIBKETAMA_COMPATIBLE => true,
+        ]));
+
+        $key = $this->key('pure_pecl_config');
+
+        self::assertTrue($m->set($key, ['configured' => true], 60));
+        self::assertSame(['configured' => true], $m->get($key));
+        self::assertSame(1, $m->getOption(MemcachedClient::OPT_NO_BLOCK));
     }
 
     public function testStats(): void
