@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: none
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: PHPStan
+        run: vendor/bin/phpstan analyse --no-progress --configuration=config/phpstan.neon
+
+      - name: PHP-CS-Fixer (dry run)
+        run: vendor/bin/php-cs-fixer fix --dry-run --diff --config=config/php-cs-fixer.dist.php
+
+      - name: Rector (dry run)
+        run: vendor/bin/rector process --dry-run --no-progress-bar --config=config/rector.php
+
+      - name: PHPUnit
+        run: vendor/bin/phpunit --configuration=config/phpunit.xml

@@ -1,0 +1,55 @@
+{
+    "name": "purememcached/memcached",
+    "description": "PECL-compatible Memcached client in pure PHP using memcached meta protocol",
+    "type": "library",
+    "license": "MIT",
+    "version": "1.0.0",
+    "require": {
+        "php": "^8.3",
+        "ext-json": "*"
+    },
+    "suggest": {
+        "ext-igbinary": "For Memcached::SERIALIZER_IGBINARY",
+        "ext-msgpack": "For Memcached::SERIALIZER_MSGPACK",
+        "ext-zlib": "For zlib compression",
+        "ext-zstd": "For ZSTD compression"
+    },
+    "autoload": {
+        "psr-4": {
+            "PureMemcached\\": "src/PureMemcached/"
+        },
+        "files": [
+            "bootstrap-alias.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "PureMemcached\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit --configuration=config/phpunit.xml",
+        "test:integration": "@php scripts/run-memcached-tests.php",
+        "test:parity": "@php scripts/run-memcached-tests.php tests/Parity",
+        "phpstan": "phpstan analyse --memory-limit=512M --configuration=config/phpstan.neon",
+        "cs-fix": "php-cs-fixer fix --config=config/php-cs-fixer.dist.php",
+        "cs-check": "php-cs-fixer fix --dry-run --diff --config=config/php-cs-fixer.dist.php",
+        "rector": "rector process --config=config/rector.php",
+        "rector-check": "rector process --dry-run --no-progress-bar --config=config/rector.php",
+        "check": [
+            "@phpstan",
+            "@cs-check",
+            "@rector-check",
+            "@test"
+        ]
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0",
+        "phpstan/phpstan": "^2.1",
+        "friendsofphp/php-cs-fixer": "^3.95",
+        "rector/rector": "^2.4",
+        "phpstan/phpstan-strict-rules": "^2.0",
+        "phpstan/phpstan-deprecation-rules": "^2.0",
+        "phpstan/phpstan-phpunit": "^2.0"
+    }
+}
