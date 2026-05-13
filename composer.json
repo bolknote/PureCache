@@ -4,6 +4,11 @@
     "type": "library",
     "license": "MIT",
     "version": "1.0.0",
+    "config": {
+        "platform": {
+            "php": "8.3.0"
+        }
+    },
     "require": {
         "php": "^8.3",
         "ext-json": "*"
