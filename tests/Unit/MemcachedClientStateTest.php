@@ -261,11 +261,14 @@ final class MemcachedClientStateTest extends TestCase
         self::assertSame(MemcachedClient::RES_NOT_SUPPORTED, $client->getResultCode());
         self::assertFalse($client->getOption(MemcachedClient::OPT_BINARY_PROTOCOL));
         self::assertTrue($client->setOption(MemcachedClient::OPT_NOREPLY, true));
-        self::assertTrue($client->getOption(MemcachedClient::OPT_NOREPLY));
+        self::assertSame(1, $client->getOption(MemcachedClient::OPT_NOREPLY));
+        self::assertSame(0, $client->getOption(MemcachedClient::OPT_TCP_KEEPALIVE));
+        self::assertTrue($client->setOption(MemcachedClient::OPT_TCP_KEEPALIVE, true));
+        self::assertSame(1, $client->getOption(MemcachedClient::OPT_TCP_KEEPALIVE));
         self::assertTrue($client->setOption(MemcachedClient::OPT_BUFFER_WRITES, true));
-        self::assertTrue($client->getOption(MemcachedClient::OPT_BUFFER_WRITES));
+        self::assertSame(1, $client->getOption(MemcachedClient::OPT_BUFFER_WRITES));
         self::assertTrue($client->setOption(MemcachedClient::OPT_HASH_WITH_PREFIX_KEY, true));
-        self::assertTrue($client->getOption(MemcachedClient::OPT_HASH_WITH_PREFIX_KEY));
+        self::assertSame(1, $client->getOption(MemcachedClient::OPT_HASH_WITH_PREFIX_KEY));
         self::assertTrue($client->setOption(MemcachedClient::OPT_DISTRIBUTION, MemcachedClient::DISTRIBUTION_CONSISTENT));
         self::assertSame(MemcachedClient::DISTRIBUTION_CONSISTENT, $client->getOption(MemcachedClient::OPT_DISTRIBUTION));
         self::assertTrue($client->setOption(MemcachedClient::OPT_HASH, MemcachedClient::HASH_CRC));
@@ -407,12 +410,12 @@ final class MemcachedClientStateTest extends TestCase
         $client = new MemcachedClient();
 
         self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE, true));
-        self::assertTrue($client->getOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE));
+        self::assertSame(1, $client->getOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE));
         self::assertSame(MemcachedClient::DISTRIBUTION_CONSISTENT, $client->getOption(MemcachedClient::OPT_DISTRIBUTION));
         self::assertSame(MemcachedClient::HASH_MD5, $client->getOption(MemcachedClient::OPT_HASH));
 
         self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE, false));
-        self::assertFalse($client->getOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE));
+        self::assertSame(0, $client->getOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE));
         self::assertSame(MemcachedClient::DISTRIBUTION_MODULA, $client->getOption(MemcachedClient::OPT_DISTRIBUTION));
         self::assertSame(MemcachedClient::HASH_DEFAULT, $client->getOption(MemcachedClient::OPT_HASH));
     }
@@ -424,7 +427,6 @@ final class MemcachedClientStateTest extends TestCase
         foreach ([
             MemcachedClient::OPT_USE_UDP,
             MemcachedClient::OPT_NO_BLOCK,
-            MemcachedClient::OPT_TCP_KEEPALIVE,
             MemcachedClient::OPT_SORT_HOSTS,
             MemcachedClient::OPT_REMOVE_FAILED_SERVERS,
             MemcachedClient::OPT_RANDOMIZE_REPLICA_READ,
@@ -443,8 +445,6 @@ final class MemcachedClientStateTest extends TestCase
             MemcachedClient::OPT_SERVER_FAILURE_LIMIT,
             MemcachedClient::OPT_SERVER_TIMEOUT_LIMIT,
             MemcachedClient::OPT_NUMBER_OF_REPLICAS,
-            MemcachedClient::OPT_SOCKET_SEND_SIZE,
-            MemcachedClient::OPT_SOCKET_RECV_SIZE,
             MemcachedClient::OPT_IO_BYTES_WATERMARK,
             MemcachedClient::OPT_IO_KEY_PREFETCH,
             MemcachedClient::OPT_IO_MSG_WATERMARK,
@@ -455,6 +455,10 @@ final class MemcachedClientStateTest extends TestCase
 
         self::assertSame(0, $client->getOption(MemcachedClient::OPT_STORE_RETRY_COUNT));
         self::assertSame(0, $client->getOption(MemcachedClient::OPT_NUMBER_OF_REPLICAS));
+        self::assertTrue($client->setOption(MemcachedClient::OPT_SOCKET_SEND_SIZE, 8192));
+        self::assertSame(8192, $client->getOption(MemcachedClient::OPT_SOCKET_SEND_SIZE));
+        self::assertTrue($client->setOption(MemcachedClient::OPT_SOCKET_RECV_SIZE, 8192));
+        self::assertSame(8192, $client->getOption(MemcachedClient::OPT_SOCKET_RECV_SIZE));
         self::assertTrue($client->setOption(MemcachedClient::OPT_USER_DATA, ['user' => true]));
         self::assertSame(['user' => true], $client->getOption(MemcachedClient::OPT_USER_DATA));
         self::assertFalse($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, MemcachedClient::HASH_MD5));
@@ -467,13 +471,14 @@ final class MemcachedClientStateTest extends TestCase
 
         foreach ([
             MemcachedClient::OPT_TCP_NODELAY,
+            MemcachedClient::OPT_TCP_KEEPALIVE,
             MemcachedClient::OPT_VERIFY_KEY,
             MemcachedClient::OPT_HASH_WITH_PREFIX_KEY,
             MemcachedClient::OPT_NOREPLY,
             MemcachedClient::OPT_BUFFER_WRITES,
         ] as $option) {
             self::assertTrue($client->setOption($option, true));
-            self::assertTrue($client->getOption($option));
+            self::assertSame(1, $client->getOption($option));
         }
     }
 

@@ -33,6 +33,9 @@ final class ClientOptionApplier
 
         if (self::isBooleanOption($option)) {
             $core->options[$option] = (bool) $value;
+            if (MemcachedConstants::OPT_TCP_KEEPALIVE === $option || MemcachedConstants::OPT_TCP_NODELAY === $option) {
+                $core->conn->resetPool();
+            }
 
             return ClientOptionResult::success();
         }
@@ -230,6 +233,9 @@ final class ClientOptionApplier
         }
 
         $core->options[$option] = $integer;
+        if (MemcachedConstants::OPT_SOCKET_SEND_SIZE === $option || MemcachedConstants::OPT_SOCKET_RECV_SIZE === $option) {
+            $core->conn->resetPool();
+        }
 
         return ClientOptionResult::success();
     }
@@ -238,6 +244,7 @@ final class ClientOptionApplier
     {
         return \in_array($option, [
             MemcachedConstants::OPT_TCP_NODELAY,
+            MemcachedConstants::OPT_TCP_KEEPALIVE,
             MemcachedConstants::OPT_VERIFY_KEY,
             MemcachedConstants::OPT_HASH_WITH_PREFIX_KEY,
             MemcachedConstants::OPT_NOREPLY,
@@ -256,7 +263,11 @@ final class ClientOptionApplier
 
     private static function isNonNegativeIntOption(int $option): bool
     {
-        return MemcachedConstants::OPT_ITEM_SIZE_LIMIT === $option;
+        return \in_array($option, [
+            MemcachedConstants::OPT_ITEM_SIZE_LIMIT,
+            MemcachedConstants::OPT_SOCKET_SEND_SIZE,
+            MemcachedConstants::OPT_SOCKET_RECV_SIZE,
+        ], true);
     }
 
     private static function isMixedStorageOption(int $option): bool
@@ -270,7 +281,6 @@ final class ClientOptionApplier
             MemcachedConstants::OPT_BINARY_PROTOCOL,
             MemcachedConstants::OPT_USE_UDP,
             MemcachedConstants::OPT_NO_BLOCK,
-            MemcachedConstants::OPT_TCP_KEEPALIVE,
             MemcachedConstants::OPT_SORT_HOSTS,
             MemcachedConstants::OPT_REMOVE_FAILED_SERVERS,
             MemcachedConstants::OPT_RANDOMIZE_REPLICA_READ,
@@ -282,8 +292,6 @@ final class ClientOptionApplier
             MemcachedConstants::OPT_SERVER_FAILURE_LIMIT,
             MemcachedConstants::OPT_SERVER_TIMEOUT_LIMIT,
             MemcachedConstants::OPT_NUMBER_OF_REPLICAS,
-            MemcachedConstants::OPT_SOCKET_SEND_SIZE,
-            MemcachedConstants::OPT_SOCKET_RECV_SIZE,
             MemcachedConstants::OPT_IO_BYTES_WATERMARK,
             MemcachedConstants::OPT_IO_KEY_PREFETCH,
             MemcachedConstants::OPT_IO_MSG_WATERMARK,

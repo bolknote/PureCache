@@ -47,11 +47,46 @@ final class PeclParityTest extends TestCase
             'OPT_SERIALIZER',
             'OPT_PREFIX_KEY',
             'OPT_HASH_WITH_PREFIX_KEY',
+            'OPT_TCP_KEEPALIVE',
+            'OPT_SOCKET_SEND_SIZE',
+            'OPT_SOCKET_RECV_SIZE',
             'OPT_USER_FLAGS',
             'SERIALIZER_PHP',
         ] as $constant) {
             self::assertSame(\Memcached::{$constant}, MemcachedClient::{$constant}, $constant);
         }
+    }
+
+    public function testSupportedOptionSetGetParity(): void
+    {
+        $this->assertParity(
+            static fn (\Memcached $client, string $prefix): array => [
+                'compressionDefault' => $client->getOption(\Memcached::OPT_COMPRESSION),
+                'tcpNoDelayDefault' => $client->getOption(\Memcached::OPT_TCP_NODELAY),
+                'tcpNoDelaySet' => $client->setOption(\Memcached::OPT_TCP_NODELAY, true),
+                'tcpNoDelayAfter' => $client->getOption(\Memcached::OPT_TCP_NODELAY),
+                'keepaliveDefault' => $client->getOption(\Memcached::OPT_TCP_KEEPALIVE),
+                'keepaliveSet' => $client->setOption(\Memcached::OPT_TCP_KEEPALIVE, true),
+                'keepaliveAfter' => $client->getOption(\Memcached::OPT_TCP_KEEPALIVE),
+                'sendSizeSet' => $client->setOption(\Memcached::OPT_SOCKET_SEND_SIZE, 8192),
+                'sendSizeAfter' => $client->getOption(\Memcached::OPT_SOCKET_SEND_SIZE),
+                'recvSizeSet' => $client->setOption(\Memcached::OPT_SOCKET_RECV_SIZE, 8192),
+                'recvSizeAfter' => $client->getOption(\Memcached::OPT_SOCKET_RECV_SIZE),
+            ],
+            static fn (MemcachedClient $client, string $prefix): array => [
+                'compressionDefault' => $client->getOption(MemcachedClient::OPT_COMPRESSION),
+                'tcpNoDelayDefault' => $client->getOption(MemcachedClient::OPT_TCP_NODELAY),
+                'tcpNoDelaySet' => $client->setOption(MemcachedClient::OPT_TCP_NODELAY, true),
+                'tcpNoDelayAfter' => $client->getOption(MemcachedClient::OPT_TCP_NODELAY),
+                'keepaliveDefault' => $client->getOption(MemcachedClient::OPT_TCP_KEEPALIVE),
+                'keepaliveSet' => $client->setOption(MemcachedClient::OPT_TCP_KEEPALIVE, true),
+                'keepaliveAfter' => $client->getOption(MemcachedClient::OPT_TCP_KEEPALIVE),
+                'sendSizeSet' => $client->setOption(MemcachedClient::OPT_SOCKET_SEND_SIZE, 8192),
+                'sendSizeAfter' => $client->getOption(MemcachedClient::OPT_SOCKET_SEND_SIZE),
+                'recvSizeSet' => $client->setOption(MemcachedClient::OPT_SOCKET_RECV_SIZE, 8192),
+                'recvSizeAfter' => $client->getOption(MemcachedClient::OPT_SOCKET_RECV_SIZE),
+            ],
+        );
     }
 
     public function testBasicMutationAndRetrievalParity(): void

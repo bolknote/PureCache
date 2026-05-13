@@ -18,6 +18,10 @@ final class ConnectionManager
         private readonly ?int $recvTimeoutUsec,
         private readonly ?int $sendTimeoutUsec,
         private readonly ?string $persistentId = null,
+        private readonly bool $tcpNoDelay = false,
+        private readonly bool $tcpKeepAlive = false,
+        private readonly int $socketSendSize = 0,
+        private readonly int $socketRecvSize = 0,
     ) {
     }
 
@@ -41,6 +45,10 @@ final class ConnectionManager
                 $this->recvTimeoutUsec,
                 $this->sendTimeoutUsec,
                 $this->persistentId,
+                $this->tcpNoDelay,
+                $this->tcpKeepAlive,
+                $this->socketSendSize,
+                $this->socketRecvSize,
             );
         }
 

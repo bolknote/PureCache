@@ -71,6 +71,10 @@ final class MemcachedClientCore
             $this->optionInt(MemcachedConstants::OPT_RECV_TIMEOUT, 0) > 0 ? $this->optionInt(MemcachedConstants::OPT_RECV_TIMEOUT, 0) * 1000 : null,
             $this->optionInt(MemcachedConstants::OPT_SEND_TIMEOUT, 0) > 0 ? $this->optionInt(MemcachedConstants::OPT_SEND_TIMEOUT, 0) * 1000 : null,
             $this->persistentId,
+            $this->optionBool(MemcachedConstants::OPT_TCP_NODELAY, false),
+            $this->optionBool(MemcachedConstants::OPT_TCP_KEEPALIVE, false),
+            $this->optionInt(MemcachedConstants::OPT_SOCKET_SEND_SIZE, 0),
+            $this->optionInt(MemcachedConstants::OPT_SOCKET_RECV_SIZE, 0),
         );
     }
 
@@ -78,6 +82,16 @@ final class MemcachedClientCore
     {
         $value = $this->options[$option] ?? $default;
         if (\is_int($value)) {
+            return $value;
+        }
+
+        return $default;
+    }
+
+    private function optionBool(int $option, bool $default): bool
+    {
+        $value = $this->options[$option] ?? $default;
+        if (\is_bool($value)) {
             return $value;
         }
 

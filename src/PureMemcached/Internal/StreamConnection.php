@@ -25,6 +25,10 @@ final class StreamConnection
         private readonly ?int $recvTimeoutUsec,
         private readonly ?int $sendTimeoutUsec,
         private readonly ?string $persistentId = null,
+        private readonly bool $tcpNoDelay = false,
+        private readonly bool $tcpKeepAlive = false,
+        private readonly int $socketSendSize = 0,
+        private readonly int $socketRecvSize = 0,
     ) {
     }
 
@@ -52,8 +56,10 @@ final class StreamConnection
         $errno = 0;
         $errstr = '';
         $target = $this->host;
+        $isTcp = true;
         if ('/' === $target[0] || ('.' === $target[0] && str_contains($target, '/'))) {
             $uri = 'unix://'.$target;
+            $isTcp = false;
         } else {
             $uri = 'tcp://'.$target.':'.$this->port;
             if (null !== $this->persistentId && '' !== $this->persistentId) {
@@ -68,7 +74,8 @@ final class StreamConnection
 
         $ctx = stream_context_create([
             'socket' => [
-                'tcp_nodelay' => true,
+                'tcp_nodelay' => $this->tcpNoDelay,
+                'so_keepalive' => $this->tcpKeepAlive,
             ],
         ]);
         $socket = @stream_socket_client(
@@ -87,6 +94,10 @@ final class StreamConnection
         }
 
         stream_set_blocking($socket, true);
+        if ($isTcp) {
+            $this->applyTcpSocketOptions($socket);
+        }
+
         if (null !== $this->recvTimeoutUsec && $this->recvTimeoutUsec > 0) {
             stream_set_timeout($socket, intdiv($this->recvTimeoutUsec, 1_000_000), $this->recvTimeoutUsec % 1_000_000);
         }
@@ -97,6 +108,37 @@ final class StreamConnection
 
         $this->socket = $socket;
         $this->readBuffer = '';
+    }
+
+    /**
+     * @param resource $socket
+     */
+    private function applyTcpSocketOptions($socket): void
+    {
+        if (!\function_exists('socket_import_stream') || !\function_exists('socket_set_option')) {
+            return;
+        }
+
+        if (!\defined('SOL_SOCKET')) {
+            return;
+        }
+
+        $importedSocket = @socket_import_stream($socket);
+        if (!$importedSocket instanceof \Socket) {
+            return;
+        }
+
+        if ($this->tcpKeepAlive && \defined('SO_KEEPALIVE')) {
+            @socket_set_option($importedSocket, \SOL_SOCKET, \SO_KEEPALIVE, 1);
+        }
+
+        if ($this->socketSendSize > 0 && \defined('SO_SNDBUF')) {
+            @socket_set_option($importedSocket, \SOL_SOCKET, \SO_SNDBUF, $this->socketSendSize);
+        }
+
+        if ($this->socketRecvSize > 0 && \defined('SO_RCVBUF')) {
+            @socket_set_option($importedSocket, \SOL_SOCKET, \SO_RCVBUF, $this->socketRecvSize);
+        }
     }
 
     public function close(): void

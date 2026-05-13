@@ -315,7 +315,12 @@ final class MemcachedClient extends MemcachedConstants
 
     public function getOption(int $option): mixed
     {
-        return $this->core->options[$option] ?? null;
+        $value = $this->core->options[$option] ?? null;
+        if (\is_bool($value) && $this->optionReturnsIntegerBoolean($option)) {
+            return $value ? 1 : 0;
+        }
+
+        return $value;
     }
 
     public function setOption(int $option, mixed $value): bool
@@ -1968,6 +1973,19 @@ final class MemcachedClient extends MemcachedConstants
         }
 
         return $default;
+    }
+
+    private function optionReturnsIntegerBoolean(int $option): bool
+    {
+        return \in_array($option, [
+            self::OPT_BUFFER_WRITES,
+            self::OPT_HASH_WITH_PREFIX_KEY,
+            self::OPT_LIBKETAMA_COMPATIBLE,
+            self::OPT_NOREPLY,
+            self::OPT_TCP_KEEPALIVE,
+            self::OPT_TCP_NODELAY,
+            self::OPT_VERIFY_KEY,
+        ], true);
     }
 
     /**
