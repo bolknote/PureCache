@@ -16,7 +16,7 @@ $finder = PhpCsFixer\Finder::create()
     ->notPath('a.php')
     ->name('*.php');
 
-return new PhpCsFixer\Config()
+return (new PhpCsFixer\Config())
     ->setCacheFile($cacheDir.'/php-cs-fixer.cache')
     ->setRiskyAllowed(true)
     ->setUnsupportedPhpVersionAllowed(true)
