@@ -33,7 +33,7 @@
         }
     },
     "scripts": {
-        "test": "phpunit --configuration=config/phpunit.xml",
+        "test": "@php scripts/run-phpunit.php --configuration=config/phpunit.xml",
         "test:integration": "@php scripts/run-memcached-tests.php",
         "test:parity": "@php scripts/run-memcached-tests.php tests/Parity",
         "phpstan": "phpstan analyse --memory-limit=512M --configuration=config/phpstan.neon",

@@ -57,7 +57,7 @@ $m = new Memcached(); // only when PECL is not loaded; otherwise this is the ext
 composer test
 ```
 
-`composer test` runs **unit tests only** (no memcached server required).
+`composer test` runs **unit tests only** (no memcached server required). If `ext-igbinary` is installed but not enabled in `php.ini`, the test runner still loads `igbinary` from PHP's `extension_dir` when the shared object is present so serializer unit tests do not skip unnecessarily.
 
 To run tests against a real memcached server, use the wrapper: it starts memcached on a free local port, sets `MEMCACHED_TEST_*`, runs the integration suite, then stops the server:
 

@@ -310,7 +310,20 @@ final class ValueCodecTest extends TestCase
     public function testUnavailableIgbinarySerializerFails(): void
     {
         if (\function_exists('igbinary_serialize')) {
-            self::markTestSkipped('igbinary is available');
+            [$payload, $flags] = ValueCodec::encode(
+                ['a' => 1],
+                MemcachedClient::SERIALIZER_IGBINARY,
+                false,
+                MemcachedClient::COMPRESSION_ZLIB,
+                3,
+                2000,
+                1.30,
+                -1,
+            );
+
+            self::assertSame(['a' => 1], ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_IGBINARY));
+
+            return;
         }
 
         $this->expectException(\RuntimeException::class);

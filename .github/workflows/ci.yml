@@ -17,6 +17,7 @@ jobs:
           php-version: "8.3"
           coverage: none
           tools: composer:v2
+          extensions: igbinary
 
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist
@@ -31,7 +32,7 @@ jobs:
         run: vendor/bin/rector process --dry-run --no-progress-bar --config=config/rector.php
 
       - name: PHPUnit (unit)
-        run: vendor/bin/phpunit --configuration=config/phpunit.xml
+        run: composer test
 
       - name: Install memcached server
         run: sudo apt-get update && sudo apt-get install -y memcached
