@@ -14,7 +14,7 @@ final class TextProtocolClient
      * release notes around 1.5.6). Older releases used LF-only item lines without a
      * dependable terminator, so we only use metadump when the server reports >= this.
      */
-    private const METADUMP_MIN_VERSION = '1.5.6';
+    private const string METADUMP_MIN_VERSION = '1.5.6';
 
     /**
      * @return array<string, int|float|string>|false
@@ -105,6 +105,7 @@ final class TextProtocolClient
         if (1 === preg_match('/^(\d+\.\d+\.\d+)/', $t, $m)) {
             return $m[1];
         }
+
         if (1 === preg_match('/^(\d+\.\d+)\b/', $t, $m)) {
             return $m[1].'.0';
         }
@@ -141,10 +142,6 @@ final class TextProtocolClient
             if (null !== $k) {
                 $keys[] = $k;
             } elseif ('' !== trim($line)) {
-                if (str_starts_with($line, 'CLIENT_ERROR') || str_starts_with($line, 'SERVER_ERROR') || str_starts_with($line, 'ERROR')) {
-                    return false;
-                }
-
                 return false;
             }
 
@@ -174,6 +171,7 @@ final class TextProtocolClient
             if ('' === $tok) {
                 continue;
             }
+
             if (str_starts_with($tok, 'key=')) {
                 return rawurldecode(substr($tok, 4));
             }
