@@ -30,5 +30,11 @@ jobs:
       - name: Rector (dry run)
         run: vendor/bin/rector process --dry-run --no-progress-bar --config=config/rector.php
 
-      - name: PHPUnit
+      - name: PHPUnit (unit)
         run: vendor/bin/phpunit --configuration=config/phpunit.xml
+
+      - name: Install memcached server
+        run: sudo apt-get update && sudo apt-get install -y memcached
+
+      - name: PHPUnit (integration)
+        run: composer test:integration

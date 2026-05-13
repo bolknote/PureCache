@@ -57,7 +57,9 @@ $m = new Memcached(); // only when PECL is not loaded; otherwise this is the ext
 composer test
 ```
 
-Integration tests are skipped automatically if the server is unreachable. To run only the tests that require a real memcached server, let the test wrapper start one on a free local port above 1024 and stop it afterwards:
+`composer test` runs **unit tests only** (no memcached server required).
+
+To run tests against a real memcached server, use the wrapper: it starts memcached on a free local port, sets `MEMCACHED_TEST_*`, runs the integration suite, then stops the server:
 
 ```bash
 composer test:integration
