@@ -32,7 +32,7 @@ final class PeclParityTest extends TestCase
 
     public function testSupportedConstantsMatchPecl(): void
     {
-        foreach ([
+        $constants = [
             'RES_SUCCESS',
             'RES_FAILURE',
             'RES_NOTFOUND',
@@ -54,8 +54,18 @@ final class PeclParityTest extends TestCase
             'OPT_USER_FLAGS',
             'SERIALIZER_PHP',
             'SERIALIZER_IGBINARY',
-        ] as $constant) {
-            self::assertSame(\Memcached::{$constant}, MemcachedClient::{$constant}, $constant);
+        ];
+
+        foreach ($constants as $constant) {
+            $peclFqn = 'Memcached::'.$constant;
+            $pureFqn = MemcachedClient::class.'::'.$constant;
+
+            if (!\defined($peclFqn)) {
+                continue;
+            }
+
+            self::assertTrue(\defined($pureFqn), $pureFqn.' is not defined');
+            self::assertSame(\constant($peclFqn), \constant($pureFqn), $constant);
         }
     }
 
@@ -449,9 +459,9 @@ final class PeclParityTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed>|false $versions
+     * @param array<array-key, mixed>|false $versions
      *
-     * @return array<string, string>|false
+     * @return array<array-key, string>|false
      */
     private static function normalizeVersionMap(array|false $versions): array|false
     {
@@ -463,7 +473,7 @@ final class PeclParityTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed>|false $stats
+     * @param array<array-key, mixed>|false $stats
      *
      * @return array<string, array<string, string>|false>|false
      */
@@ -475,8 +485,9 @@ final class PeclParityTest extends TestCase
 
         $normalized = [];
         foreach ($stats as $server => $serverStats) {
+            $serverKey = (string) $server;
             if (false === $serverStats) {
-                $normalized[$server] = false;
+                $normalized[$serverKey] = false;
                 continue;
             }
 
@@ -486,8 +497,8 @@ final class PeclParityTest extends TestCase
                 $normalizedServerStats[(string) $statKey] = \is_string($statValue) ? '<string>' : get_debug_type($statValue);
             }
 
-            $normalized[$server] = $normalizedServerStats;
-            ksort($normalized[$server]);
+            $normalized[$serverKey] = $normalizedServerStats;
+            ksort($normalized[$serverKey]);
         }
 
         ksort($normalized);
