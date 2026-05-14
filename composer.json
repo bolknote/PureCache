@@ -3,7 +3,9 @@
     "description": "PECL-compatible Memcached client in pure PHP using memcached meta protocol",
     "type": "library",
     "license": "MIT",
-    "config": {},
+    "config": {
+        "process-timeout": 0
+    },
     "require": {
         "php": "^8.3",
         "ext-json": "*"
@@ -30,6 +32,7 @@
         "test:integration": "@php scripts/run-memcached-tests.php",
         "test:parity": "@php scripts/run-memcached-tests.php tests/Parity",
         "test:redis": "@php scripts/run-redis-tests.php",
+        "test:ignite": "@php scripts/run-ignite-tests.php",
         "test:coverage": "@php vendor/bin/phpunit --configuration=config/phpunit.xml --coverage-text --colors=never",
         "phpstan": "phpstan analyse --memory-limit=512M --configuration=config/phpstan.neon",
         "cs-fix": "php-cs-fixer fix --config=config/php-cs-fixer.dist.php",

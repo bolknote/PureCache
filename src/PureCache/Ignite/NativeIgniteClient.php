@@ -1,0 +1,506 @@
+<?php
+
+declare(strict_types=1);
+
+namespace PureCache\Ignite;
+
+use PureCache\Ignite\Internal\IgniteCacheCodec;
+use PureCache\Ignite\Internal\IgniteHashCode;
+use PureCache\Ignite\Internal\IgniteProtocol;
+use PureCache\Ignite\Internal\IgniteStatsSnapshot;
+use PureCache\Ignite\Internal\IgniteWire;
+
+/**
+ * Pure-PHP Ignite thin-client transport.
+ *
+ * Speaks the v1.2.0 binary client protocol directly over a TCP stream — no
+ * external Ignite PHP package is pulled in. Only the request/response shapes
+ * exercised by {@see IgniteClient} are implemented (no SQL, no binary type
+ * registration), so the surface area stays small and reviewable.
+ *
+ * Each instance multiplexes requests onto a single socket and pairs them with
+ * server replies by the auto-incrementing {@code requestId} that the protocol
+ * echoes in the header.
+ */
+final class NativeIgniteClient
+{
+    /** @var resource|null */
+    private $stream;
+
+    private int $nextRequestId = 1;
+
+    private string $serverVersion = '';
+
+    /**
+     * Unix timestamp of the most recent successful handshake; 0 when the
+     * client has not connected yet (or after {@see disconnect()}).
+     */
+    private int $connectedAt = 0;
+
+    private int $bytesRead = 0;
+
+    private int $bytesWritten = 0;
+
+    /** @var array<int, int> opcode → call count since the last connect */
+    private array $opCounts = [];
+
+    public function __construct(
+        private readonly string $host,
+        private readonly int $port,
+        private readonly float $readWriteTimeout = 0.0,
+    ) {
+    }
+
+    public function connect(): void
+    {
+        if (\is_resource($this->stream)) {
+            return;
+        }
+
+        $errno = 0;
+        $errstr = '';
+        $remote = 'tcp://'.$this->host.':'.$this->port;
+        $timeout = $this->readWriteTimeout > 0 ? $this->readWriteTimeout : (float) \ini_get('default_socket_timeout');
+
+        $context = stream_context_create([
+            'socket' => ['tcp_nodelay' => true],
+        ]);
+
+        $stream = @stream_socket_client($remote, $errno, $errstr, $timeout, \STREAM_CLIENT_CONNECT, $context);
+        if (!\is_resource($stream)) {
+            throw new \RuntimeException('Ignite connect failed: '.$errstr.' ('.$errno.')');
+        }
+
+        stream_set_blocking($stream, true);
+        if ($this->readWriteTimeout > 0) {
+            $sec = (int) floor($this->readWriteTimeout);
+            $usec = (int) round(($this->readWriteTimeout - $sec) * 1_000_000);
+            stream_set_timeout($stream, $sec, $usec);
+        }
+
+        $this->stream = $stream;
+
+        try {
+            $this->performHandshake();
+        } catch (\Throwable $throwable) {
+            $this->disconnect();
+            throw $throwable;
+        }
+    }
+
+    public function disconnect(): void
+    {
+        if (!\is_resource($this->stream)) {
+            return;
+        }
+
+        fclose($this->stream);
+        $this->stream = null;
+        $this->connectedAt = 0;
+        $this->bytesRead = 0;
+        $this->bytesWritten = 0;
+        $this->opCounts = [];
+    }
+
+    public function __destruct()
+    {
+        $this->disconnect();
+    }
+
+    public function getServerVersion(): string
+    {
+        return $this->serverVersion;
+    }
+
+    /**
+     * Snapshot of bytes/opcode/uptime counters maintained by this connection.
+     * Used by {@see IgniteStatsAsMemcached} to build a
+     * memcached-shaped {@code stats} reply.
+     */
+    public function getStatsSnapshot(): IgniteStatsSnapshot
+    {
+        return new IgniteStatsSnapshot(
+            $this->serverVersion,
+            $this->connectedAt,
+            $this->bytesRead,
+            $this->bytesWritten,
+            $this->opCounts,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cache operations
+    // -----------------------------------------------------------------------
+
+    public function getOrCreateCache(string $name): int
+    {
+        $this->ensureConnected();
+        $cacheId = IgniteHashCode::ofString($name);
+        $body = IgniteCacheCodec::encodeStringObject($name);
+        $this->execute(IgniteProtocol::OP_CACHE_GET_OR_CREATE_WITH_NAME, $body);
+
+        return $cacheId;
+    }
+
+    public function cacheGet(int $cacheId, string $key): ?string
+    {
+        $body = $this->cacheKeyBody($cacheId, $key);
+        $response = $this->execute(IgniteProtocol::OP_CACHE_GET, $body);
+
+        return $this->readByteArrayObject($response, 0);
+    }
+
+    public function cachePut(int $cacheId, string $key, string $value): void
+    {
+        $body = $this->cacheKeyBody($cacheId, $key).IgniteCacheCodec::encodeByteArrayObject($value);
+        $this->execute(IgniteProtocol::OP_CACHE_PUT, $body);
+    }
+
+    public function cachePutIfAbsent(int $cacheId, string $key, string $value): bool
+    {
+        $body = $this->cacheKeyBody($cacheId, $key).IgniteCacheCodec::encodeByteArrayObject($value);
+        $response = $this->execute(IgniteProtocol::OP_CACHE_PUT_IF_ABSENT, $body);
+
+        return $this->readBool($response, 0);
+    }
+
+    public function cacheReplace(int $cacheId, string $key, string $value): bool
+    {
+        $body = $this->cacheKeyBody($cacheId, $key).IgniteCacheCodec::encodeByteArrayObject($value);
+        $response = $this->execute(IgniteProtocol::OP_CACHE_REPLACE, $body);
+
+        return $this->readBool($response, 0);
+    }
+
+    public function cacheReplaceIfEquals(int $cacheId, string $key, string $expected, string $newValue): bool
+    {
+        $body = $this->cacheKeyBody($cacheId, $key)
+            .IgniteCacheCodec::encodeByteArrayObject($expected)
+            .IgniteCacheCodec::encodeByteArrayObject($newValue);
+        $response = $this->execute(IgniteProtocol::OP_CACHE_REPLACE_IF_EQUALS, $body);
+
+        return $this->readBool($response, 0);
+    }
+
+    public function cacheContainsKey(int $cacheId, string $key): bool
+    {
+        $body = $this->cacheKeyBody($cacheId, $key);
+        $response = $this->execute(IgniteProtocol::OP_CACHE_CONTAINS_KEY, $body);
+
+        return $this->readBool($response, 0);
+    }
+
+    public function cacheRemoveKey(int $cacheId, string $key): bool
+    {
+        $body = $this->cacheKeyBody($cacheId, $key);
+        $response = $this->execute(IgniteProtocol::OP_CACHE_REMOVE_KEY, $body);
+
+        return $this->readBool($response, 0);
+    }
+
+    public function cacheClear(int $cacheId): void
+    {
+        $body = $this->cacheInfoBody($cacheId);
+        $this->execute(IgniteProtocol::OP_CACHE_CLEAR, $body);
+    }
+
+    public function cacheGetSize(int $cacheId): int
+    {
+        $body = $this->cacheInfoBody($cacheId);
+        $body .= IgniteWire::packInt32(0);
+        $response = $this->execute(IgniteProtocol::OP_CACHE_GET_SIZE, $body);
+
+        return IgniteWire::unpackInt64($response, 0);
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function cacheScanKeys(int $cacheId, int $pageSize = 256): array
+    {
+        $body = $this->cacheInfoBody($cacheId);
+        $body .= IgniteCacheCodec::encodeNullObject();
+        $body .= IgniteWire::packInt32($pageSize);
+        $body .= IgniteWire::packInt32(-1);
+        $body .= IgniteWire::packInt8(0);
+
+        $response = $this->execute(IgniteProtocol::OP_QUERY_SCAN, $body);
+        $cursorId = IgniteWire::unpackInt64($response, 0);
+
+        $keys = [];
+        [$page, $hasMore] = $this->readScanPage($response, 8);
+        foreach ($page as $key) {
+            $keys[] = $key;
+        }
+
+        while ($hasMore) {
+            $pageBody = IgniteWire::packInt64($cursorId);
+            $pageResponse = $this->execute(IgniteProtocol::OP_QUERY_SCAN_CURSOR_GET_PAGE, $pageBody);
+            [$nextPage, $hasMore] = $this->readScanPage($pageResponse, 0);
+            foreach ($nextPage as $key) {
+                $keys[] = $key;
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function cacheGetNames(): array
+    {
+        $response = $this->execute(IgniteProtocol::OP_CACHE_GET_NAMES, '');
+        $count = IgniteWire::unpackInt32($response, 0);
+        $offset = 4;
+        $names = [];
+        for ($i = 0; $i < $count; ++$i) {
+            [$name, $offset] = $this->readStringObject($response, $offset);
+            $names[] = $name;
+        }
+
+        return $names;
+    }
+
+    // -----------------------------------------------------------------------
+    // Internals
+    // -----------------------------------------------------------------------
+
+    private function performHandshake(): void
+    {
+        $body = IgniteWire::packInt8(IgniteProtocol::HANDSHAKE_CODE)
+            .IgniteWire::packInt16(IgniteProtocol::PROTOCOL_MAJOR)
+            .IgniteWire::packInt16(IgniteProtocol::PROTOCOL_MINOR)
+            .IgniteWire::packInt16(IgniteProtocol::PROTOCOL_PATCH)
+            .IgniteWire::packInt8(IgniteProtocol::CLIENT_TYPE_THIN);
+
+        $this->writeBytes(IgniteWire::packInt32(\strlen($body)).$body);
+
+        $response = $this->readFramedResponse();
+        $status = IgniteWire::unpackUint8($response, 0);
+        if (IgniteProtocol::HANDSHAKE_OK !== $status) {
+            $major = IgniteWire::unpackInt16($response, 1);
+            $minor = IgniteWire::unpackInt16($response, 3);
+            $patch = IgniteWire::unpackInt16($response, 5);
+            [$message] = $this->readStringObject($response, 7);
+
+            throw new \RuntimeException(\sprintf('Ignite handshake failed (server %d.%d.%d): %s', $major, $minor, $patch, $message));
+        }
+
+        $this->serverVersion = \sprintf('%d.%d.%d', IgniteProtocol::PROTOCOL_MAJOR, IgniteProtocol::PROTOCOL_MINOR, IgniteProtocol::PROTOCOL_PATCH);
+        $this->connectedAt = time();
+    }
+
+    private function execute(int $opCode, string $body): string
+    {
+        $this->ensureConnected();
+        $this->opCounts[$opCode] = ($this->opCounts[$opCode] ?? 0) + 1;
+        $requestId = $this->nextRequestId++;
+        $message = IgniteWire::packInt16($opCode).IgniteWire::packInt64($requestId).$body;
+        $this->writeBytes(IgniteWire::packInt32(\strlen($message)).$message);
+
+        return $this->readResponse($requestId);
+    }
+
+    private function readResponse(int $expectedRequestId): string
+    {
+        $frame = $this->readFramedResponse();
+        if (\strlen($frame) < 12) {
+            throw new \RuntimeException('Ignite reply too short');
+        }
+
+        $responseId = IgniteWire::unpackInt64($frame, 0);
+        if ($responseId !== $expectedRequestId) {
+            throw new \RuntimeException('Ignite reply request id mismatch');
+        }
+
+        $status = IgniteWire::unpackInt32($frame, 8);
+        if (IgniteProtocol::RESPONSE_OK !== $status) {
+            [$message] = $this->readStringObject($frame, 12);
+
+            throw new IgniteCommandException($message, $status);
+        }
+
+        return substr($frame, 12);
+    }
+
+    private function readFramedResponse(): string
+    {
+        $header = $this->readExact(4);
+        $length = IgniteWire::unpackInt32($header, 0);
+        if ($length < 0) {
+            throw new \RuntimeException('Ignite reply: invalid frame length');
+        }
+
+        if (0 === $length) {
+            return '';
+        }
+
+        return $this->readExact($length);
+    }
+
+    /**
+     * @return array{0:list<string>, 1:bool}
+     */
+    private function readScanPage(string $bytes, int $offset): array
+    {
+        $rowCount = IgniteWire::unpackInt32($bytes, $offset);
+        $offset += 4;
+        $keys = [];
+        for ($i = 0; $i < $rowCount; ++$i) {
+            [$key, $offset] = $this->readStringObject($bytes, $offset);
+            $keys[] = $key;
+            $offset = $this->skipByteArrayObject($bytes, $offset);
+        }
+
+        return [$keys, $this->readBool($bytes, $offset)];
+    }
+
+    /**
+     * Reads one type-prefixed {@code byte[]} (type 12) or NULL (type 101) at the
+     * given offset. Returns {@code null} when the object is NULL so callers can
+     * disambiguate "missing key" from "empty byte array".
+     */
+    private function readByteArrayObject(string $bytes, int $offset): ?string
+    {
+        $type = IgniteWire::unpackUint8($bytes, $offset);
+        if (IgniteProtocol::TYPE_NULL === $type) {
+            return null;
+        }
+
+        if (IgniteProtocol::TYPE_BYTE_ARRAY !== $type) {
+            throw new \RuntimeException('Ignite reply: expected byte_array, got type '.$type);
+        }
+
+        $length = IgniteWire::unpackInt32($bytes, $offset + 1);
+        if ($length < 0) {
+            throw new \RuntimeException('Ignite reply: negative byte_array length');
+        }
+
+        return substr($bytes, $offset + 5, $length);
+    }
+
+    private function skipByteArrayObject(string $bytes, int $offset): int
+    {
+        $type = IgniteWire::unpackUint8($bytes, $offset);
+        if (IgniteProtocol::TYPE_NULL === $type) {
+            return $offset + 1;
+        }
+
+        if (IgniteProtocol::TYPE_BYTE_ARRAY !== $type) {
+            throw new \RuntimeException('Ignite reply: expected byte_array, got type '.$type);
+        }
+
+        $length = IgniteWire::unpackInt32($bytes, $offset + 1);
+
+        return $offset + 5 + max(0, $length);
+    }
+
+    /**
+     * Reads one type-prefixed {@code String} object and returns the decoded
+     * value along with the next read offset.
+     *
+     * @return array{0:string,1:int}
+     */
+    private function readStringObject(string $bytes, int $offset): array
+    {
+        $type = IgniteWire::unpackUint8($bytes, $offset);
+        if (IgniteProtocol::TYPE_NULL === $type) {
+            return ['', $offset + 1];
+        }
+
+        if (IgniteProtocol::TYPE_STRING !== $type) {
+            throw new \RuntimeException('Ignite reply: expected string, got type '.$type);
+        }
+
+        $length = IgniteWire::unpackInt32($bytes, $offset + 1);
+        if ($length < 0) {
+            throw new \RuntimeException('Ignite reply: negative string length');
+        }
+
+        return [substr($bytes, $offset + 5, $length), $offset + 5 + $length];
+    }
+
+    private function readBool(string $bytes, int $offset): bool
+    {
+        return 1 === IgniteWire::unpackUint8($bytes, $offset);
+    }
+
+    private function cacheInfoBody(int $cacheId): string
+    {
+        return IgniteWire::packInt32($cacheId).IgniteWire::packInt8(0);
+    }
+
+    private function cacheKeyBody(int $cacheId, string $key): string
+    {
+        return $this->cacheInfoBody($cacheId).IgniteCacheCodec::encodeStringObject($key);
+    }
+
+    private function ensureConnected(): void
+    {
+        if (!\is_resource($this->stream)) {
+            $this->connect();
+        }
+    }
+
+    private function writeBytes(string $data): void
+    {
+        if (!\is_resource($this->stream)) {
+            throw new \RuntimeException('Ignite not connected');
+        }
+
+        $total = \strlen($data);
+        $written = 0;
+        while ($written < $total) {
+            $chunk = @fwrite($this->stream, substr($data, $written));
+            if (false === $chunk || 0 === $chunk) {
+                $this->checkTimeout();
+                throw new \RuntimeException('Ignite write failed');
+            }
+
+            $written += $chunk;
+        }
+
+        $this->bytesWritten += $total;
+    }
+
+    private function readExact(int $length): string
+    {
+        if ($length <= 0) {
+            return '';
+        }
+
+        if (!\is_resource($this->stream)) {
+            throw new \RuntimeException('Ignite not connected');
+        }
+
+        $buf = '';
+        $remaining = $length;
+        while ($remaining > 0) {
+            $chunk = @fread($this->stream, $remaining);
+            if (false === $chunk || '' === $chunk) {
+                $this->checkTimeout();
+                throw new \RuntimeException('Ignite read truncated');
+            }
+
+            $buf .= $chunk;
+            $remaining = $length - \strlen($buf);
+        }
+
+        $this->bytesRead += $length;
+
+        return $buf;
+    }
+
+    private function checkTimeout(): void
+    {
+        if (!\is_resource($this->stream)) {
+            return;
+        }
+
+        $meta = stream_get_meta_data($this->stream);
+        if ($meta['timed_out']) {
+            throw new \RuntimeException('Ignite read timed out');
+        }
+    }
+}

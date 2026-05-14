@@ -4,15 +4,18 @@ declare(strict_types=1);
 
 namespace PureCache;
 
+use PureCache\Ignite\IgniteClient;
 use PureCache\Memcached\MemcachedClient;
 use PureCache\Redis\RedisClient;
 
 /**
- * Builds a PECL-shaped cache client for memcached, Redis, or app-registered backends.
+ * Builds a PECL-shaped cache client for memcached, Redis, Apache Ignite, or
+ * app-registered backends.
  *
- * There is no auto-detection by host/port: memcached and Redis speak different protocols.
- * Choose explicitly via {@see self::create()} (or instantiate {@see MemcachedClient} /
- * {@see RedisClient} directly). Additional drivers register with {@see self::register()}.
+ * There is no auto-detection by host/port: each backend speaks a different
+ * protocol. Choose explicitly via {@see self::create()} (or instantiate
+ * {@see MemcachedClient} / {@see RedisClient} / {@see IgniteClient} directly).
+ * Additional drivers register with {@see self::register()}.
  */
 final class ClientFactory
 {
@@ -20,6 +23,10 @@ final class ClientFactory
      * @var array<string, callable(?string, ?callable, ?string): CacheClient>
      */
     private static array $registry = [];
+
+    private function __construct()
+    {
+    }
 
     /**
      * @param non-empty-string                                                                           $name    Case-insensitive; must not collide with built-in names {@code memcached}, {@code mc}, {@code redis}
@@ -65,7 +72,7 @@ final class ClientFactory
     }
 
     /**
-     * @param string|null $backend {@code null}, empty string, {@code memcached} or {@code mc} → {@see MemcachedClient}; {@code redis} → {@see RedisClient}; otherwise a {@see self::register()}d name
+     * @param string|null $backend {@code null}, empty string, {@code memcached} or {@code mc} → {@see MemcachedClient}; {@code redis} → {@see RedisClient}; {@code ignite} or {@code ig} → {@see IgniteClient}; otherwise a {@see self::register()}d name
      */
     public static function create(
         ?string $backend = null,
@@ -75,19 +82,13 @@ final class ClientFactory
     ): CacheClient {
         $key = self::normalizeName($backend ?? '');
 
-        if ('' === $key || 'memcached' === $key || 'mc' === $key) {
-            return new MemcachedClient($persistentId, $callback, $connection_str);
-        }
-
-        if ('redis' === $key) {
-            return new RedisClient($persistentId, $callback, $connection_str);
-        }
-
-        if (isset(self::$registry[$key])) {
-            return (self::$registry[$key])($persistentId, $callback, $connection_str);
-        }
-
-        throw new \InvalidArgumentException(\sprintf('Unsupported cache backend %s. Use memcached, mc, redis, omit for memcached, or register a custom backend.', null === $backend || '' === $backend ? '(empty)' : $backend));
+        return match (true) {
+            '' === $key, 'memcached' === $key, 'mc' === $key => new MemcachedClient($persistentId, $callback, $connection_str),
+            'redis' === $key => new RedisClient($persistentId, $callback, $connection_str),
+            'ignite' === $key, 'ig' === $key => new IgniteClient($persistentId, $callback, $connection_str),
+            isset(self::$registry[$key]) => (self::$registry[$key])($persistentId, $callback, $connection_str),
+            default => throw new \InvalidArgumentException(\sprintf('Unsupported cache backend %s. Use memcached, mc, redis, ignite, ig, omit for memcached, or register a custom backend.', null === $backend || '' === $backend ? '(empty)' : $backend)),
+        };
     }
 
     private static function normalizeName(string $name): string
@@ -97,6 +98,11 @@ final class ClientFactory
 
     private static function isBuiltinBackendKey(string $key): bool
     {
-        return '' === $key || 'memcached' === $key || 'mc' === $key || 'redis' === $key;
+        return '' === $key
+            || 'memcached' === $key
+            || 'mc' === $key
+            || 'redis' === $key
+            || 'ignite' === $key
+            || 'ig' === $key;
     }
 }

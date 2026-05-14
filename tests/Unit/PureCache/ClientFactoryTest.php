@@ -7,6 +7,7 @@ namespace PureCache\Tests\Unit\PureCache;
 use PHPUnit\Framework\TestCase;
 use PureCache\CacheClient;
 use PureCache\ClientFactory;
+use PureCache\Ignite\IgniteClient;
 use PureCache\Memcached\MemcachedClient;
 use PureCache\Redis\RedisClient;
 
@@ -29,6 +30,12 @@ final class ClientFactoryTest extends TestCase
     public function testRedisBackend(): void
     {
         self::assertInstanceOf(RedisClient::class, ClientFactory::create('redis'));
+    }
+
+    public function testIgniteBackendIsAvailableUnderBothAliases(): void
+    {
+        self::assertInstanceOf(IgniteClient::class, ClientFactory::create('ignite'));
+        self::assertInstanceOf(IgniteClient::class, ClientFactory::create('IG'));
     }
 
     public function testUnknownBackendThrows(): void
@@ -79,5 +86,11 @@ final class ClientFactoryTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         ClientFactory::unregister('redis');
+    }
+
+    public function testRegisterOverIgniteThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        ClientFactory::register('ignite', fn (): CacheClient => $this->createMock(CacheClient::class));
     }
 }

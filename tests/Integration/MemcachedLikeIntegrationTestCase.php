@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 use PureCache\CacheClient;
 use PureCache\Memcached\MemcachedClient;
 
-abstract class AbstractMemcachedLikeIntegrationTest extends TestCase
+abstract class MemcachedLikeIntegrationTestCase extends TestCase
 {
     abstract protected static function integrationHost(): string;
 
@@ -145,10 +145,19 @@ abstract class AbstractMemcachedLikeIntegrationTest extends TestCase
         $m = $this->createClient();
         $key = $this->key('pure_incr');
         $m->delete($key);
+
+        // No autovivify (PECL semantics: initial/expiry not passed) — missing key returns false.
         self::assertFalse($m->increment($key, 2));
         self::assertSame(MemcachedClient::RES_NOTFOUND, $m->getResultCode());
-        self::assertFalse($m->increment($key, 1, 0, 60));
-        self::assertSame(MemcachedClient::RES_NOTFOUND, $m->getResultCode());
+
+        // Autovivify path: PECL/libmemcached returns the initial value on a missing key.
+        self::assertSame(0, $m->increment($key, 1, 0, 60));
+        self::assertSame(MemcachedClient::RES_SUCCESS, $m->getResultCode());
+
+        // Subsequent increments now work as usual.
+        self::assertSame(1, $m->increment($key, 1));
+
+        $m->delete($key);
         self::assertTrue($m->set($key, 10, 60));
         self::assertSame(12, $m->increment($key, 2));
         self::assertSame(9, $m->decrement($key, 3));
@@ -399,8 +408,13 @@ abstract class AbstractMemcachedLikeIntegrationTest extends TestCase
         $m->deleteByKey('route-c', $counter);
         self::assertFalse($m->incrementByKey('route-c', $counter, 2));
         self::assertSame(MemcachedClient::RES_NOTFOUND, $m->getResultCode());
-        self::assertFalse($m->incrementByKey('route-c', $counter, 1, 0, 60));
-        self::assertSame(MemcachedClient::RES_NOTFOUND, $m->getResultCode());
+
+        // PECL parity: passing initial/expiry triggers autovivify; the call
+        // returns the initial value (not false) and the key is then ready.
+        self::assertSame(0, $m->incrementByKey('route-c', $counter, 1, 0, 60));
+        self::assertSame(MemcachedClient::RES_SUCCESS, $m->getResultCode());
+        self::assertTrue($m->deleteByKey('route-c', $counter));
+
         self::assertTrue($m->setByKey('route-c', $counter, 5, 60));
         self::assertSame(7, $m->incrementByKey('route-c', $counter, 2));
         self::assertSame(4, $m->decrementByKey('route-c', $counter, 3));
@@ -881,5 +895,36 @@ abstract class AbstractMemcachedLikeIntegrationTest extends TestCase
         self::assertTrue($m->flush());
         self::assertFalse($m->get($keys[0]));
         self::assertSame(MemcachedClient::RES_NOTFOUND, $m->getResultCode());
+    }
+
+    public function testPhpSerializedObjectIsSafeByDefaultAndOptInRehydratesIt(): void
+    {
+        $writer = $this->createClient();
+        $writer->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_PHP);
+
+        $key = $this->key('pure_safe_classes');
+
+        $payload = new \ArrayObject(['data' => 42, 'tag' => 'memcached']);
+        self::assertTrue($writer->set($key, $payload, 60));
+
+        // Default reader: allowed_classes = false. The payload comes back as
+        // __PHP_Incomplete_Class — this is the safe modern default, not PECL
+        // parity.
+        $safeReader = $this->createClient();
+        $safeReader->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_PHP);
+
+        $safeRead = $safeReader->get($key);
+        self::assertInstanceOf(\__PHP_Incomplete_Class::class, $safeRead);
+
+        // Opt-in reader: allowed_classes = true. Rehydrates to the real class
+        // for PECL parity.
+        $peclReader = $this->createClient();
+        $peclReader->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_PHP);
+        $peclReader->setOption(MemcachedClient::OPT_ALLOW_SERIALIZED_CLASSES, true);
+
+        $peclRead = $peclReader->get($key);
+        self::assertInstanceOf(\ArrayObject::class, $peclRead);
+        self::assertSame(42, $peclRead['data']);
+        self::assertSame('memcached', $peclRead['tag']);
     }
 }
