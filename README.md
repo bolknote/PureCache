@@ -142,6 +142,38 @@ Prefer importing constants from `PureCache\MemcachedConstants` in application co
 - Per-key TTL on `set` / `setMulti` is silently ignored. The shared cache is opened with whatever expiry policy is configured server-side; if none is configured, entries live until they are explicitly overwritten or removed. `touch()` reduces to a key-existence check (returns `RES_SUCCESS` if the key is present, `RES_NOTFOUND` otherwise) and the new expiration value is not applied.
 - `setSaslAuthData()` / `setEncodingKey()` return `RES_NOT_SUPPORTED` here as in every other backend (the unsupported list under "Explicitly unsupported" applies).
 
+## Backend differences
+
+The PECL surface is the same across all three clients; the table below lists the
+places where backend semantics diverge in observable ways.
+
+| Topic | Memcached (meta) | Redis (RESP2 + Lua) | Apache Ignite (thin client) |
+| --- | --- | --- | --- |
+| Default port | `11211` | `6379` | `10800` |
+| Max key length | 250 B (protocol-mandated) | 65 536 B | 65 536 B |
+| Connection-string forms | `host:port`, `host:port:weight` | `host[:port]`, `redis://[user:pass@]host:port[/db]`, `rediss://...` (auth via `AUTH`, db via `SELECT`) | `host[:port]` |
+| Multi-server endpoints | true client-side sharding (Ketama / modula) | independent shards via the same `ServerSelector`; for Redis Cluster register a single endpoint | independent shards; for an Ignite cluster register one endpoint and let the server-side partitioner do the work |
+| TTL semantics on `set` / `setMulti` | ≤30 days → relative seconds, >30 days → absolute Unix ts | same as memcached (normalized client-side before `EVAL`) | per-key TTL **silently ignored**; expiry policy is whatever the shared cache is configured with on the server |
+| `touch($key, $exp)` | sets new TTL via meta `mt`/`mg` semantics | sets new TTL atomically via Lua | reduces to existence check — returns `RES_SUCCESS` / `RES_NOTFOUND`, **does not** change the entry's expiry |
+| `flush(0)` | text `flush_all` | RESP `FLUSHDB` | `OP_CACHE_CLEAR` |
+| `flush($delay > 0)` | text `flush_all <delay>` (server-side scheduled flush) | `RES_NOT_SUPPORTED` (`flush delay not supported on Redis`) | `RES_NOT_SUPPORTED` (`flush delay not supported on Ignite`) |
+| CAS implementation | meta `cs` / `cas` token (one round-trip) | Lua `EVAL` that compares + swaps atomically | 63-bit positive token kept inside a 16-byte value header; commit via `OP_CACHE_REPLACE_IF_EQUALS` (single round-trip) |
+| `append` / `prepend` atomicity | native meta `ms` mode | server-side Lua | optimistic retry loop on `REPLACE_IF_EQUALS` |
+| `increment` / `decrement` (with `initial_value` + `expiry`) | meta `ma` with autovivify | Lua script seeds the long counter and applies expiry atomically | same `initial_value` + `expiry` semantics via the optimistic-retry loop |
+| `setMulti` / `setMultiByKey` batching | grouped meta `ms` writes per server, replies read in order | pipelined `EVALSHA` per server (one TCP round-trip, replies read in order) | per-item sequential stores (no `OP_CACHE_PUT_ALL` pipelining yet) |
+| `getStats` | classic text `stats` (`stats items`, `stats slabs`, …) | RESP `INFO` mapped to memcached-shaped sections (general / items / slabs / sizes / `INFO <section>`) | thin-client status snapshot mapped to a memcached-shaped section set |
+| `getVersion` | text `version` | `INFO server` → `redis_version` | thin-client status snapshot version field |
+| `getAllKeys` | `lru_crawler metadump all` on memcached ≥ 1.5.6, else `stats items` / `stats cachedump` | `SCAN MATCH pm:v1:*` with `COUNT 500` per server, stripped to logical keys | `cacheScanKeys` per server over the `PURECACHE_V1` cache |
+| `delete($key, $time > 0)` | `RES_NOT_SUPPORTED` (delayed delete not exposed in the meta protocol) | `RES_NOT_SUPPORTED` | `RES_NOT_SUPPORTED` |
+| Built-in authentication | none (`setSaslAuthData()` → `RES_NOT_SUPPORTED`) | URL-embedded `AUTH user pass` + optional `SELECT db` in the handshake | none |
+| `setSaslAuthData()` / `setEncodingKey()` | `RES_NOT_SUPPORTED` | `RES_NOT_SUPPORTED` | `RES_NOT_SUPPORTED` |
+| Persistent-connection pool (`persistent_id`) | isolated per backend via the shared `PersistentStateRegistry` trait — the same id on different backends does **not** collide |||
+| Serializer / compression / `OPT_USER_FLAGS` | identical (handled by `ValueCodec` before the wire) |||
+
+If an unsupported call has a per-backend reason, it lands in `getResultMessage()`
+verbatim (`flush delay not supported on Redis`, etc.), so application logs can
+attribute parity gaps to the right backend.
+
 ## Tests
 
 ```bash
