@@ -549,7 +549,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
 
         $mode = $this->optionInt(self::OPT_ENCODING_MODE, self::ENCODING_MODE_LIBMEMCACHED);
         $ctx = EncodingContext::fromUserKey($mode, $key);
-        if (null === $ctx) {
+        if (!$ctx instanceof EncodingContext) {
             $this->setResult(self::RES_INVALID_ARGUMENTS, 'invalid encoding mode');
 
             return false;
@@ -565,8 +565,8 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      * Encoding context currently in force, or {@code null} when
      * {@link CacheClient::setEncodingKey()} has not been called (or was last
      * called with an unsupported mode). Backends pipe this value into
-     * {@see \PureCache\Internal\ValueCodec::encode()} /
-     * {@see \PureCache\Internal\ValueCodec::decode()} so encryption stays a
+     * {@see Internal\ValueCodec::encode()} /
+     * {@see Internal\ValueCodec::decode()} so encryption stays a
      * pure value-pipeline concern and never leaks into protocol handling.
      */
     protected function encodingContext(): ?EncodingContext

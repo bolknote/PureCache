@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PureCache;
 
-/**
+/*
  * {@see MemcachedConstants::HAVE_ENCODING} is a class constant (to match
  * PECL's reflection-visible shape) but its value must reflect whether the
  * PureCache build can actually encrypt values, which depends on

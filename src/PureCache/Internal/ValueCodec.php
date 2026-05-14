@@ -43,7 +43,7 @@ final class ValueCodec
 
     /**
      * Marker bit set on entries produced under
-     * {@see \PureCache\MemcachedConstants::ENCODING_MODE_AEAD}. Sits inside
+     * {@see MemcachedConstants::ENCODING_MODE_AEAD}. Sits inside
      * {@see MASK_INTERNAL} (bits 4-15) so it round-trips through every
      * backend's flag column. Libmemcached-compat encryption is deliberately
      * markerless — the bit only appears for the modern AEAD format.
@@ -138,7 +138,7 @@ final class ValueCodec
             }
         }
 
-        if (null !== $encoding) {
+        if ($encoding instanceof EncodingContext) {
             $payload = PayloadEncryption::encrypt($payload, $encoding);
             if (MemcachedConstants::ENCODING_MODE_AEAD === $encoding->mode) {
                 $flags |= self::ENCRYPTED_AEAD;
@@ -184,13 +184,13 @@ final class ValueCodec
         ?EncodingContext $encoding = null,
     ): mixed {
         if (self::hasAeadEncryption($flags)) {
-            if (null === $encoding || MemcachedConstants::ENCODING_MODE_AEAD !== $encoding->mode) {
+            if (!$encoding instanceof EncodingContext || MemcachedConstants::ENCODING_MODE_AEAD !== $encoding->mode) {
                 throw new \RuntimeException('encrypted payload (AEAD) but no matching encoding key configured');
             }
 
             $payload = PayloadEncryption::decrypt($payload, $encoding);
             $flags &= ~self::ENCRYPTED_AEAD;
-        } elseif (null !== $encoding && MemcachedConstants::ENCODING_MODE_LIBMEMCACHED === $encoding->mode) {
+        } elseif ($encoding instanceof EncodingContext && MemcachedConstants::ENCODING_MODE_LIBMEMCACHED === $encoding->mode) {
             $payload = PayloadEncryption::decrypt($payload, $encoding);
         }
 

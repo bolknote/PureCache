@@ -6,6 +6,7 @@ namespace PureCache\Redis;
 
 use PureCache\AbstractCacheClient;
 use PureCache\Internal\CacheEntry;
+use PureCache\Internal\EncodingContext;
 use PureCache\Internal\Expiration;
 use PureCache\Internal\KeyFormatter;
 use PureCache\Internal\PersistentStateRegistry;
@@ -220,7 +221,7 @@ final class RedisClient extends AbstractCacheClient
             return false;
         }
 
-        if ($mode->isConcatenation() && null !== $this->encodingContext()) {
+        if ($mode->isConcatenation() && $this->encodingContext() instanceof EncodingContext) {
             trigger_error('cannot append/prepend with encoding key set', \E_USER_WARNING);
             $this->setResult(self::RES_NOTSTORED);
 

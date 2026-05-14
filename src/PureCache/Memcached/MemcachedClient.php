@@ -6,6 +6,7 @@ namespace PureCache\Memcached;
 
 use PureCache\AbstractCacheClient;
 use PureCache\Internal\CacheEntry;
+use PureCache\Internal\EncodingContext;
 use PureCache\Internal\PersistentStateRegistry;
 use PureCache\Internal\StoreMode;
 use PureCache\Internal\ValueCodec;
@@ -278,7 +279,7 @@ final class MemcachedClient extends AbstractCacheClient
             return false;
         }
 
-        if ($mode->isConcatenation() && null !== $this->encodingContext()) {
+        if ($mode->isConcatenation() && $this->encodingContext() instanceof EncodingContext) {
             trigger_error('cannot append/prepend with encoding key set', \E_USER_WARNING);
             $this->setResult(self::RES_NOTSTORED);
 
