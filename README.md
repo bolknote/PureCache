@@ -2,6 +2,15 @@
 
 Pure PHP 8.3 implementation of the PECL `Memcached` API on top of pluggable backends: the memcached meta protocol, Redis (RESP2), and Apache Ignite (thin client binary protocol). All memcached cache operations use the **memcached meta protocol** (`mg`, `ms`, `md`, `ma`, `me`, `mn`) on the TCP connection.
 
+## Who is this for?
+
+This module is aimed at two audiences:
+
+- **Teams that want to move to the memcached meta protocol** (`mg`/`ms`/`md`/`ma`/`me`/`mn`). PECL `ext-memcached` is built on libmemcached, which still speaks the classic ASCII / binary protocols and has **no support for the meta protocol** — so the only way to talk meta from PHP today is to bypass libmemcached entirely. `PureCache\Memcached\MemcachedClient` does exactly that: it speaks meta directly on the TCP socket while keeping the `Memcached::*` API shape, so existing code keeps compiling and running.
+- **Teams that want to swap the cache backend cheaply.** The same PECL-shaped API is implemented on top of memcached (meta), Redis (RESP2 + Lua), and Apache Ignite (thin client). Migrating from one to another is a one-line change (`MemcachedClient` → `RedisClient` / `IgniteClient`, or via `ClientFactory::create()`); application code, `OPT_*` configuration, serializers, CAS, counters, and session handling stay the same. You can drop in `bootstrap-alias.php` to keep the global `Memcached` class working when `ext-memcached` is not installed, which makes the swap reversible.
+
+If you already use PECL `Memcached` and are happy with the classic / binary protocol and a single backend, `ext-memcached` is faster (it is a C extension) — this library is for the cases above where PECL is not an option.
+
 ## Namespace (no dependency on ext-memcached)
 
 All implementation code lives under **`PureCache`** and **does not rely on** the global `\Memcached` class or its constants—the PECL extension may or may not be installed.
