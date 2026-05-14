@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace PureMemcached\Tests\Unit;
+namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use PureMemcached\Client\MemcachedConstants;
-use PureMemcached\Internal\MetaResult;
+use PureCache\Memcached\Internal\MetaResult;
+use PureCache\MemcachedConstants;
 
 final class MetaResultTest extends TestCase
 {

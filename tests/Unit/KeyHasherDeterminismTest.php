@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace PureMemcached\Tests\Unit;
+namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
-use PureMemcached\Client\MemcachedClient;
-use PureMemcached\Internal\KeyHasher;
+use PureCache\Internal\KeyHasher;
+use PureCache\Memcached\MemcachedClient;
 
 final class KeyHasherDeterminismTest extends TestCase
 {

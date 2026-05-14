@@ -1,14 +1,9 @@
 {
-    "name": "purememcached/memcached",
+    "name": "purecache/cache",
     "description": "PECL-compatible Memcached client in pure PHP using memcached meta protocol",
     "type": "library",
     "license": "MIT",
-    "version": "1.0.0",
-    "config": {
-        "platform": {
-            "php": "8.3.0"
-        }
-    },
+    "config": {},
     "require": {
         "php": "^8.3",
         "ext-json": "*"
@@ -17,25 +12,25 @@
         "ext-igbinary": "For Memcached::SERIALIZER_IGBINARY",
         "ext-msgpack": "For Memcached::SERIALIZER_MSGPACK",
         "ext-zlib": "For zlib compression",
-        "ext-zstd": "For ZSTD compression"
+        "ext-zstd": "For ZSTD compression",
+        "ext-fastlz": "For FastLZ compression (COMPRESSION_TYPE_FASTLZ)"
     },
     "autoload": {
         "psr-4": {
-            "PureMemcached\\": "src/PureMemcached/"
-        },
-        "files": [
-            "bootstrap-alias.php"
-        ]
+            "PureCache\\": "src/PureCache/"
+        }
     },
     "autoload-dev": {
         "psr-4": {
-            "PureMemcached\\Tests\\": "tests/"
+            "PureCache\\Tests\\": "tests/"
         }
     },
     "scripts": {
         "test": "@php scripts/run-phpunit.php --configuration=config/phpunit.xml",
         "test:integration": "@php scripts/run-memcached-tests.php",
         "test:parity": "@php scripts/run-memcached-tests.php tests/Parity",
+        "test:redis": "@php scripts/run-redis-tests.php",
+        "test:coverage": "@php vendor/bin/phpunit --configuration=config/phpunit.xml --coverage-text --colors=never",
         "phpstan": "phpstan analyse --memory-limit=512M --configuration=config/phpstan.neon",
         "cs-fix": "php-cs-fixer fix --config=config/php-cs-fixer.dist.php",
         "cs-check": "php-cs-fixer fix --dry-run --diff --config=config/php-cs-fixer.dist.php",

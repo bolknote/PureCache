@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-namespace PureMemcached\Tests\Unit;
+namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use PureMemcached\Internal\ConnectionException;
-use PureMemcached\Internal\ConnectionManager;
-use PureMemcached\Internal\ServerSelector;
-use PureMemcached\Internal\StreamConnection;
+use PureCache\Internal\ServerSelector;
+use PureCache\Memcached\Internal\ConnectionException;
+use PureCache\Memcached\Internal\ConnectionManager;
+use PureCache\Memcached\Internal\StreamConnection;
 
 final class ConnectionInternalsTest extends TestCase
 {

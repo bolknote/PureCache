@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace PureMemcached\Tests\Unit;
+namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use PureMemcached\Internal\MetaReader;
-use PureMemcached\Internal\StreamConnection;
-use PureMemcached\Internal\TextProtocolClient;
+use PureCache\Memcached\Internal\MetaReader;
+use PureCache\Memcached\Internal\StreamConnection;
+use PureCache\Memcached\Internal\TextProtocolClient;
 
 final class ProtocolReaderTest extends TestCase
 {

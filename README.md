@@ -1,18 +1,20 @@
-# purememcached/memcached
+# purecache/cache
 
-Pure PHP 8.3 implementation of the PECL `Memcached` API. All cache operations use the **memcached meta protocol** (`mg`, `ms`, `md`, `ma`, `me`, `mn`) on the TCP connection.
+Pure PHP 8.3 implementation of the PECL `Memcached` API (memcached meta protocol and optional Redis backend). All memcached cache operations use the **memcached meta protocol** (`mg`, `ms`, `md`, `ma`, `me`, `mn`) on the TCP connection.
 
 ## Namespace (no dependency on ext-memcached)
 
-All implementation code lives under **`PureMemcached\Client`** and **does not rely on** the global `\Memcached` class or its constants—the PECL extension may or may not be installed.
+All implementation code lives under **`PureCache`** and **does not rely on** the global `\Memcached` class or its constants—the PECL extension may or may not be installed.
 
-- Client: `PureMemcached\Client\MemcachedClient`
-- Constants (`RES_*`, `OPT_*`, …): `PureMemcached\Client\MemcachedConstants` (abstract base class). The same names are also available as `MemcachedClient::RES_*` because the client extends that class.
+- Memcached (meta protocol): `PureCache\Memcached\MemcachedClient`
+- Redis-backed client: `PureCache\Redis\RedisClient`
+- Multi-backend factory: `PureCache\ClientFactory` (see `PureCache\CacheClient`)
+- Constants (`RES_*`, `OPT_*`, …): `PureCache\MemcachedConstants` (abstract base class). The same names are also available as `MemcachedClient::RES_*` because the client extends that class.
 
 Example:
 
 ```php
-use PureMemcached\Client\MemcachedClient;
+use PureCache\Memcached\MemcachedClient;
 
 $m = new MemcachedClient();
 $m->addServer('127.0.0.1', 11211);
@@ -39,17 +41,25 @@ Those methods send the same classic **text** one-liners on the same socket (afte
 ## Install
 
 ```bash
-composer require purememcached/memcached
+composer require purecache/cache
 ```
 
 ## Optional global shim (only when PECL is not loaded)
 
-The `bootstrap-alias.php` file defines the global **`Memcached`** class as an alias of `MemcachedClient` **only when** `extension_loaded('memcached')` is false. In your own code, prefer importing constants from `MemcachedConstants` so you do not depend on whether the shim was loaded.
+The `bootstrap-alias.php` file defines the global **`Memcached`** class as an alias of `PureCache\Memcached\MemcachedClient` **only when** the PECL extension is not loaded **and** the global class is not already defined. It is **not** loaded via Composer `autoload.files` — opt in from your bootstrap (the test suite loads it from `tests/bootstrap.php`).
 
 ```php
 require __DIR__ . '/vendor/.../bootstrap-alias.php';
 $m = new Memcached(); // only when PECL is not loaded; otherwise this is the extension class
 ```
+
+Prefer importing constants from `PureCache\MemcachedConstants` in application code so you do not depend on whether the shim was loaded.
+
+## Redis backend notes
+
+- Item keys are stored under the `pm:v1:` prefix with a hash per logical memcached item (`HSET` fields `d`, `f`, `c`).
+- Mutations that must be atomic (`set`/`cas`/`add`/`replace`/`append`/`prepend`/`incr`/`decr`/`touch`) are implemented with **Redis `EVAL` Lua** scripts so compare-and-swap and counter updates are not split across round-trips.
+- `OPT_RECV_TIMEOUT` / `OPT_SEND_TIMEOUT` are interpreted as **milliseconds** (same as the memcached client) and applied as Redis read/write timeouts in **seconds** on the socket.
 
 ## Tests
 
@@ -73,7 +83,7 @@ When the PECL `memcached` extension is installed, run parity checks against the 
 composer test:parity
 ```
 
-The parity runner starts a fresh memcached server and compares supported API behavior between `\Memcached` and `PureMemcached\Client\MemcachedClient`. If `memcached.so` is available in PHP's `extension_dir`, it is loaded via `-d`; if `igbinary.so` is also available, it is loaded first so `SERIALIZER_IGBINARY` parity is covered.
+The parity runner starts a fresh memcached server and compares supported API behavior between `\Memcached` and `PureCache\Memcached\MemcachedClient`. If `memcached.so` is available in PHP's `extension_dir`, it is loaded via `-d`; if `igbinary.so` is also available, it is loaded first so `SERIALIZER_IGBINARY` parity is covered.
 
 ## Compatibility matrix
 

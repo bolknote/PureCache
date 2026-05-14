@@ -2,17 +2,18 @@
 
 declare(strict_types=1);
 
-namespace PureMemcached\Tests\Unit;
+namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use PureMemcached\Client\MemcachedClient;
-use PureMemcached\Internal\ClientOptionApplier;
-use PureMemcached\Internal\KeyFormatter;
-use PureMemcached\Internal\MemcachedClientCore;
-use PureMemcached\Internal\MetaReader;
-use PureMemcached\Internal\MetaValueReader;
-use PureMemcached\Internal\StreamConnection;
-use PureMemcached\Internal\ValueCodec;
+use PureCache\Internal\ClientOptionApplier;
+use PureCache\Internal\KeyFormatter;
+use PureCache\Internal\OptionEnvironment;
+use PureCache\Internal\ValueCodec;
+use PureCache\Memcached\Internal\MemcachedClientCore;
+use PureCache\Memcached\Internal\MetaReader;
+use PureCache\Memcached\Internal\MetaValueReader;
+use PureCache\Memcached\Internal\StreamConnection;
+use PureCache\Memcached\MemcachedClient;
 
 final class InternalComponentsTest extends TestCase
 {
@@ -53,7 +54,7 @@ final class InternalComponentsTest extends TestCase
     {
         $core = MemcachedClientCore::createFresh();
 
-        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_BINARY_PROTOCOL, true);
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_BINARY_PROTOCOL, true, $this->fakeEnv());
 
         self::assertFalse($result->ok);
         self::assertSame(28, $result->code);
@@ -65,12 +66,35 @@ final class InternalComponentsTest extends TestCase
     {
         $core = MemcachedClientCore::createFresh();
 
-        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_LIBKETAMA_COMPATIBLE, true);
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_LIBKETAMA_COMPATIBLE, true, $this->fakeEnv());
 
         self::assertTrue($result->ok);
         self::assertTrue($core->options[MemcachedClient::OPT_LIBKETAMA_COMPATIBLE]);
         self::assertSame(MemcachedClient::DISTRIBUTION_CONSISTENT, $core->options[MemcachedClient::OPT_DISTRIBUTION]);
         self::assertSame(MemcachedClient::HASH_MD5, $core->options[MemcachedClient::OPT_HASH]);
+    }
+
+    private function fakeEnv(): OptionEnvironment
+    {
+        return new class implements OptionEnvironment {
+            public function onPoolInvalidated(): void
+            {
+            }
+
+            public function onTimeoutsChanged(): void
+            {
+            }
+
+            public function isUnsupportedOption(int $option): bool
+            {
+                return false;
+            }
+
+            public function unsupportedOptionMessage(): string
+            {
+                return 'option is not supported by the pure PHP meta protocol client';
+            }
+        };
     }
 
     public function testMetaValueReaderDecodesValuesAndMisses(): void

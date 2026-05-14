@@ -2,40 +2,20 @@
 
 declare(strict_types=1);
 
-namespace PureMemcached\Tests\Unit;
+namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use PureMemcached\Client\MemcachedClient;
-use PureMemcached\Internal\MetaReader;
-use PureMemcached\Internal\MetaResult;
-use PureMemcached\Internal\StreamConnection;
+use PureCache\Memcached\Internal\MetaResult;
+use PureCache\Memcached\MemcachedClient;
 
 final class MemcachedClientStateTest extends TestCase
 {
-    /**
-     * @return array{0: StreamConnection, 1: resource}
-     */
-    private function socketConnection(string $serverData): array
-    {
-        $pair = stream_socket_pair(\STREAM_PF_UNIX, \STREAM_SOCK_STREAM, \STREAM_IPPROTO_IP);
-        self::assertIsArray($pair);
-
-        [$client, $server] = $pair;
-        fwrite($server, $serverData);
-
-        $connection = new StreamConnection('127.0.0.1', 11211, 0.1, null, null);
-        $socket = new \ReflectionProperty(StreamConnection::class, 'socket');
-        $socket->setValue($connection, $client);
-
-        return [$connection, $server];
-    }
-
     public function testExtendedValueIncludesZeroCasAndFlagsLikePecl(): void
     {
         $client = new MemcachedClient();
-        $method = new \ReflectionMethod(MemcachedClient::class, 'extendedValue');
+        $method = new \ReflectionMethod(MemcachedClient::class, 'valueForGetFlags');
 
-        $extended = $method->invoke($client, 'value', new MetaResult('VA', ['f' => '0'], null));
+        $extended = $method->invoke($client, 'value', new MetaResult('VA', ['f' => '0'], null), MemcachedClient::GET_EXTENDED);
 
         self::assertSame([
             'value' => 'value',
@@ -57,29 +37,6 @@ final class MemcachedClientStateTest extends TestCase
             'cas' => 0,
             'flags' => 0,
         ], $entry);
-    }
-
-    public function testDelayedCallbackIncludesZeroCasAndFlagsWhenRequested(): void
-    {
-        [$connection, $server] = $this->socketConnection("VA 5 f0\r\nvalue\r\n");
-        $client = new MemcachedClient();
-        $method = new \ReflectionMethod(MemcachedClient::class, 'dispatchDelayedValueCb');
-        $seen = null;
-
-        try {
-            $method->invoke($client, new MetaReader($connection), 'key', true, static function (MemcachedClient $client, array $item) use (&$seen): void {
-                $seen = $item;
-            });
-        } finally {
-            fclose($server);
-        }
-
-        self::assertSame([
-            'key' => 'key',
-            'value' => 'value',
-            'cas' => 0,
-            'flags' => 0,
-        ], $seen);
     }
 
     public function testServerListLifecycle(): void

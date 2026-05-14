@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace PureMemcached\Tests\Unit;
+namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use PureMemcached\Client\MemcachedClient;
-use PureMemcached\Internal\KetamaContinuum;
-use PureMemcached\Internal\ServerSelector;
+use PureCache\Internal\KetamaContinuum;
+use PureCache\Internal\ServerSelector;
+use PureCache\Memcached\MemcachedClient;
 
 final class ServerSelectorTest extends TestCase
 {

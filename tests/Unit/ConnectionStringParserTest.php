@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace PureMemcached\Tests\Unit;
+namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use PureMemcached\Internal\ConnectionStringParser;
+use PureCache\Internal\ConnectionStringParser;
 
 final class ConnectionStringParserTest extends TestCase
 {
@@ -43,6 +43,11 @@ final class ConnectionStringParserTest extends TestCase
     {
         $list = ConnectionStringParser::parseServers('[::1]:11211:4');
         self::assertSame([['host' => '::1', 'port' => 11211, 'weight' => 4]], $list);
+    }
+
+    public function testIpv6LiteralWithoutBracketsIsRejected(): void
+    {
+        self::assertSame([], ConnectionStringParser::parseServers('::1:11211'));
     }
 
     public function testIgnoresInvalidTokens(): void

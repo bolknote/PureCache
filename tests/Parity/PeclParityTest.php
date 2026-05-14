@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace PureMemcached\Tests\Parity;
+namespace PureCache\Tests\Parity;
 
 use PHPUnit\Framework\TestCase;
-use PureMemcached\Client\MemcachedClient;
+use PureCache\Memcached\MemcachedClient;
 
 final class PeclParityTest extends TestCase
 {
