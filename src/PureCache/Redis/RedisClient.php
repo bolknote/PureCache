@@ -63,10 +63,41 @@ final class RedisClient extends AbstractCacheClient
         $this->disconnectRedis();
     }
 
+    /**
+     * Options whose libmemcached/PECL semantics have no analogue on the
+     * RESP2 client we ship — either the surrounding TCP knob is never wired
+     * up in {@see NativeRedisClient::connect()} (KEEPALIVE family, socket
+     * buffer sizes, TCP_CORK), or the option only makes sense for
+     * libmemcached's internal IO scheduler (POLL_TIMEOUT, IO watermarks,
+     * key prefetch, DNS cache). Setting them quietly to {@code RES_SUCCESS}
+     * would mean accepting a value that demonstrably does nothing — PECL's
+     * own contract is to surface {@code RES_NOT_SUPPORTED} for behaviours
+     * the underlying client can't honour, so we do the same.
+     *
+     * Notably *kept* as supported: {@code OPT_TCP_NODELAY} (Redis transport
+     * pins it to {@code true} already, matching the typical request),
+     * {@code OPT_NO_BLOCK} (kept for cross-backend setOption() parity even
+     * though our reader is blocking), and every routing / replication /
+     * serialization / encoding / timeout option that PureCache implements
+     * uniformly for all backends.
+     */
+    private const array UNSUPPORTED_OPTIONS = [
+        self::OPT_TCP_KEEPALIVE => true,
+        self::OPT_TCP_KEEPIDLE => true,
+        self::OPT_SOCKET_SEND_SIZE => true,
+        self::OPT_SOCKET_RECV_SIZE => true,
+        self::OPT_CORK => true,
+        self::OPT_POLL_TIMEOUT => true,
+        self::OPT_IO_BYTES_WATERMARK => true,
+        self::OPT_IO_MSG_WATERMARK => true,
+        self::OPT_IO_KEY_PREFETCH => true,
+        self::OPT_CACHE_LOOKUPS => true,
+    ];
+
     #[\Override]
     public function isUnsupportedOption(int $option): bool
     {
-        return false;
+        return isset(self::UNSUPPORTED_OPTIONS[$option]);
     }
 
     #[\Override]
@@ -212,7 +243,6 @@ final class RedisClient extends AbstractCacheClient
     #[\Override]
     protected function doStore(string $key, mixed $value, int $expiration, StoreMode $mode, ?string $serverKey, ?string $casToken): bool
     {
-        $this->pristine = false;
         if (!$this->rejectIncompatibleConcatenation($mode)) {
             return false;
         }
@@ -292,7 +322,6 @@ final class RedisClient extends AbstractCacheClient
     #[\Override]
     protected function doStoreMulti(array $items, int $expiration, ?string $serverKey): bool
     {
-        $this->pristine = false;
         if ([] === $items) {
             $this->setResult(self::RES_SUCCESS);
 
@@ -300,6 +329,10 @@ final class RedisClient extends AbstractCacheClient
         }
 
         $ok = true;
+
+        // Loop-invariant for all items in this call: same script SHA, same TTL window.
+        $scriptSha = sha1(RedisItemScripts::LUA_CAS_SET);
+        $ttlArg = (string) ($this->ttlSeconds($expiration) ?? 0);
 
         /** @var array<int, list<array{cmd: list<string>, key: string, primary: bool}>> $byServer */
         $byServer = [];
@@ -327,11 +360,20 @@ final class RedisClient extends AbstractCacheClient
             }
 
             $rk = $this->itemRedisKey($pk);
-            $ttl = $this->ttlSeconds($expiration);
-            $cmd = ['EVALSHA', sha1(RedisItemScripts::LUA_CAS_SET), '1', $rk, $payload, (string) $flags, (string) ($ttl ?? 0), ''];
+            $cmd = ['EVALSHA', $scriptSha, '1', $rk, $payload, (string) $flags, $ttlArg, ''];
 
-            $byServer[$targets['primary']][] = ['cmd' => $cmd, 'key' => $keyString, 'primary' => true];
+            $primaryIdx = $targets['primary'];
+            $byServer[$primaryIdx][] = ['cmd' => $cmd, 'key' => $keyString, 'primary' => true];
+            // Dedup replicas against the primary and against each other: a
+            // single Redis connection must never see the same EVALSHA twice
+            // per item, otherwise we'd corrupt CAS and double the work.
+            $seenReplicas = [$primaryIdx => true];
             foreach ($targets['replicas'] as $replicaIdx) {
+                if (isset($seenReplicas[$replicaIdx])) {
+                    continue;
+                }
+
+                $seenReplicas[$replicaIdx] = true;
                 $byServer[$replicaIdx][] = ['cmd' => $cmd, 'key' => $keyString, 'primary' => false];
             }
         }
@@ -399,10 +441,17 @@ final class RedisClient extends AbstractCacheClient
     }
 
     /**
-     * Wraps {@see NativeRedisClient::pipeline()} so a NOSCRIPT failure on the
-     * first reply triggers a one-shot {@code SCRIPT LOAD} + retry of the whole
-     * batch — same lazy-cache strategy as {@see NativeRedisClient::evalScript()}
-     * but pipeline-aware.
+     * Wraps {@see NativeRedisClient::pipeline()} with a lazy {@code SCRIPT LOAD}
+     * recovery: any {@code NOSCRIPT}-failed slot is re-issued after the server
+     * has been told to cache {@code $script}, while every other slot — success
+     * or other error — is kept verbatim.
+     *
+     * Unlike a "retry the whole batch" strategy, this re-runs only the commands
+     * the server refused, so callers don't have to assume their commands are
+     * idempotent. {@code $script} must be the source of every EVALSHA in
+     * {@code $commands} (the helper has no way to tell different scripts
+     * apart), which holds for every current caller because each batch sticks
+     * to one Lua program.
      *
      * @param list<list<string>> $commands
      *
@@ -415,21 +464,34 @@ final class RedisClient extends AbstractCacheClient
         }
 
         $replies = $redis->pipeline($commands);
-        $needsLoad = false;
-        foreach ($replies as $reply) {
+
+        $retrySlots = [];
+        foreach ($replies as $position => $reply) {
             if ($reply instanceof RedisCommandException && str_starts_with($reply->getMessage(), 'NOSCRIPT')) {
-                $needsLoad = true;
-                break;
+                $retrySlots[] = $position;
             }
         }
 
-        if (!$needsLoad) {
+        if ([] === $retrySlots) {
             return $replies;
         }
 
         $redis->executeRaw(['SCRIPT', 'LOAD', $script]);
 
-        return $redis->pipeline($commands);
+        $retryCommands = [];
+        foreach ($retrySlots as $position) {
+            $retryCommands[] = $commands[$position];
+        }
+
+        $retryReplies = $redis->pipeline($retryCommands);
+        foreach ($retrySlots as $i => $position) {
+            $replies[$position] = $retryReplies[$i];
+        }
+
+        // We only overwrote existing list-shaped indices, but PHPStan can't
+        // prove that on its own — array_values() is the cheap way to reassure
+        // the type checker that the result is still a list<mixed>.
+        return array_values($replies);
     }
 
     #[\Override]
@@ -487,22 +549,22 @@ final class RedisClient extends AbstractCacheClient
             return $this->writeFanout($serverKey, $key, function (int $idx) use ($pk): bool {
                 try {
                     $rk = $this->itemRedisKey($pk);
-                    $fn = static function (NativeRedisClient $r) use ($rk): void {
-                        $r->del([$rk]);
-                    };
 
                     if ($this->useNoReply()) {
-                        $this->enqueueWrite($fn, $idx);
+                        // Fire-and-forget: enqueueWrite() already routes through
+                        // the OPT_BUFFER_WRITES check (buffer when on, dispatch
+                        // immediately when off).
+                        $this->enqueueWrite(static function (NativeRedisClient $r) use ($rk): void {
+                            $r->del([$rk]);
+                        }, $idx);
 
                         return $this->okResult(self::RES_SUCCESS);
                     }
 
-                    $n = 0;
-                    $this->enqueueWrite(static function (NativeRedisClient $r) use ($rk, &$n): void {
-                        $n = $r->del([$rk]);
-                    }, $idx);
-                    $this->flushWriteBuffer();
-
+                    // With-reply path: the pre-flush above already drained any
+                    // pending buffered writes, so call DEL synchronously and
+                    // inspect the count without re-entering the buffer machinery.
+                    $n = $this->redisForServerIndex($idx)->del([$rk]);
                     if (0 === $n) {
                         return $this->failResult(self::RES_NOTFOUND);
                     }
@@ -633,14 +695,17 @@ final class RedisClient extends AbstractCacheClient
     #[\Override]
     protected function doFlush(int $delay): bool
     {
-        $this->flushWriteBuffer();
-        if (!$this->ensureServersAvailable()) {
-            return false;
-        }
-
+        // Reject unsupported features *before* spending I/O on draining the
+        // write buffer — there's no point flushing pending writes only to
+        // bail out with RES_NOT_SUPPORTED a line later.
         if ($delay > 0) {
             $this->setResult(self::RES_NOT_SUPPORTED, 'flush delay not supported on Redis');
 
+            return false;
+        }
+
+        $this->flushWriteBuffer();
+        if (!$this->ensureServersAvailable()) {
             return false;
         }
 
@@ -666,7 +731,8 @@ final class RedisClient extends AbstractCacheClient
             return false;
         }
 
-        $result = $this->collectFromServers(function (int $i): array {
+        $prefixLen = \strlen(self::ITEM_KEY_PREFIX);
+        $result = $this->collectFromServers(function (int $i) use ($prefixLen): array {
             $r = $this->redisForServerIndex($i);
             $cursor = 0;
             $keys = [];
@@ -675,7 +741,7 @@ final class RedisClient extends AbstractCacheClient
                 $cursor = $scan[0];
                 foreach ($scan[1] as $k) {
                     if (str_starts_with($k, self::ITEM_KEY_PREFIX)) {
-                        $keys[] = substr($k, \strlen(self::ITEM_KEY_PREFIX));
+                        $keys[] = substr($k, $prefixLen);
                     }
                 }
             } while (0 !== $cursor);
@@ -691,12 +757,12 @@ final class RedisClient extends AbstractCacheClient
 
         $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
 
-        $merged = [];
-        foreach ($result['values'] as $list) {
-            $merged = array_merge($merged, $list);
-        }
+        // Single allocation: O(N) instead of the array_merge-in-loop O(N*S)
+        // and array_unique's string-key O(N log N) — array_flip dedupes via
+        // hash table, and array_keys hands us back a list<string>.
+        $merged = [] === $result['values'] ? [] : array_merge(...array_values($result['values']));
 
-        return array_values(array_unique($merged));
+        return array_keys(array_flip($merged));
     }
 
     // -----------------------------------------------------------------------
@@ -832,7 +898,21 @@ final class RedisClient extends AbstractCacheClient
     private function disconnectRedis(): void
     {
         $st = $this->st();
+
+        // Best-effort: hand the buffered writes to their cached connections
+        // before we tear them down. The connection cache is keyed by the
+        // *original* server index, so even a pool reshuffle (resetServerList,
+        // setBucket) cannot reroute these writes to a different physical
+        // server — they either land on the original socket or fail outright.
+        // Either way, we drop the buffer afterwards so a partial failure here
+        // doesn't double-fire writes on the next operation.
+        try {
+            $this->flushWriteBuffer();
+        } catch (\Throwable) {
+        }
+
         $this->writeBuffer = [];
+
         foreach ($st->redisByServerIndex as $idx => $redis) {
             try {
                 $redis->disconnect();
@@ -996,23 +1076,16 @@ final class RedisClient extends AbstractCacheClient
     private function runStoreFn(callable $fn, int $serverIndex): bool
     {
         try {
-            if ($this->useNoReply()) {
-                if ($this->optionBool(self::OPT_BUFFER_WRITES, false)) {
-                    $this->enqueueWrite($fn, $serverIndex);
-                } else {
-                    $fn($this->redisForServerIndex($serverIndex));
-                }
-
-                $this->setResult(self::RES_SUCCESS);
-
-                return true;
+            // enqueueWrite() already honours OPT_BUFFER_WRITES, so the only
+            // backend-specific knob left here is whether a "no-reply" write
+            // should defer the flush (memcached compatibility: fire-and-forget
+            // writes are allowed to accumulate until the next round-trip).
+            $this->enqueueWrite($fn, $serverIndex);
+            if (!$this->useNoReply()) {
+                $this->flushWriteBuffer();
             }
 
-            $this->enqueueWrite($fn, $serverIndex);
-            $this->flushWriteBuffer();
-            $this->setResult(self::RES_SUCCESS);
-
-            return true;
+            return $this->okResult(self::RES_SUCCESS);
         } catch (RedisClientStoreException $redisClientStoreException) {
             return match ($redisClientStoreException->outcome) {
                 RedisItemScripts::STATUS_NOT_STORED => $this->failResult(self::RES_NOTSTORED),

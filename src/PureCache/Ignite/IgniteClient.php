@@ -257,7 +257,6 @@ final class IgniteClient extends AbstractCacheClient
     #[\Override]
     protected function doStore(string $key, mixed $value, int $expiration, StoreMode $mode, ?string $serverKey, ?string $casToken): bool
     {
-        $this->pristine = false;
         if (!$this->rejectIncompatibleConcatenation($mode)) {
             return false;
         }
@@ -310,7 +309,6 @@ final class IgniteClient extends AbstractCacheClient
     #[\Override]
     protected function doStoreMulti(array $items, int $expiration, ?string $serverKey): bool
     {
-        $this->pristine = false;
         if ([] === $items) {
             $this->setResult(self::RES_SUCCESS);
 

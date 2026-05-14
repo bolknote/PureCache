@@ -8,8 +8,10 @@ use PureCache\Internal\CacheEntry;
 use PureCache\Internal\ClientCoreState;
 use PureCache\Internal\ClientOptionApplier;
 use PureCache\Internal\ClientOptionResult;
+use PureCache\Internal\ClientOptions;
 use PureCache\Internal\EncodingContext;
 use PureCache\Internal\KeyFormatter;
+use PureCache\Internal\LibmemcachedConfigFile;
 use PureCache\Internal\OptionEnvironment;
 use PureCache\Internal\ServerEndpoint;
 use PureCache\Internal\StoreMode;
@@ -620,7 +622,6 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     #[\Override]
     public function get(string $key, ?callable $cache_cb = null, int $get_flags = 0): mixed
     {
-        $this->pristine = false;
         $this->flushNetworkWrites();
 
         $pk = $this->prefixedKey($key);
@@ -649,7 +650,6 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     #[\Override]
     public function getByKey(string $server_key, string $key, ?callable $cache_cb = null, int $get_flags = 0): mixed
     {
-        $this->pristine = false;
         $this->flushNetworkWrites();
 
         $pk = $this->prefixedKey($key);
@@ -1017,6 +1017,27 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     #[\Override]
     public function applyCustomOption(int $option, mixed $value, ClientCoreState $core): ?ClientOptionResult
     {
+        if (self::OPT_LOAD_FROM_FILE === $option) {
+            $path = ClientOptions::stringValue($value);
+            if (null === $path) {
+                return ClientOptionResult::failure(
+                    self::RES_INVALID_ARGUMENTS,
+                    'OPT_LOAD_FROM_FILE expects a filename string',
+                );
+            }
+
+            $result = LibmemcachedConfigFile::applyToClient($path, $this);
+            if ($result->ok) {
+                // libmemcached doesn't track the path post-load (the behaviour
+                // get returns 0), but recording it makes getOption() a useful
+                // debug aid without breaking parity for any code that already
+                // ignores the value.
+                $core->options[self::OPT_LOAD_FROM_FILE] = $path;
+            }
+
+            return $result;
+        }
+
         return null;
     }
 
@@ -1330,12 +1351,12 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      * Boilerplate-free pre-flight for an operation routed by a single PECL key.
      *
      * Validates the prefixed key + the (optional) server-key, ensures the server
-     * pool is non-empty, picks the routing index, and flips {@code pristine = false}.
-     * On any pre-flight failure the appropriate {@code RES_*} is set and the
-     * closure is not invoked; on a thrown protocol-level exception
-     * {@see recordServerFailure()} is invoked and the result is set to
-     * {@code RES_FAILURE}. In both failure cases the supplied {@code $failureValue}
-     * is returned so the caller can use the same sentinel as the PECL surface.
+     * pool is non-empty, and picks the routing index. On any pre-flight failure
+     * the appropriate {@code RES_*} is set and the closure is not invoked; on
+     * a thrown protocol-level exception {@see recordServerFailure()} is invoked
+     * and the result is set to {@code RES_FAILURE}. In both failure cases the
+     * supplied {@code $failureValue} is returned so the caller can use the same
+     * sentinel as the PECL surface.
      *
      * @template TResult
      *
@@ -1352,7 +1373,6 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         bool $forRead = false,
         bool $fanoutWrite = false,
     ): mixed {
-        $this->pristine = false;
         $pk = $this->prefixedKey($key);
         if (!$this->checkKeyInternal($pk) || (null !== $serverKey && !$this->checkKeyInternal($serverKey))) {
             $this->setResult(self::RES_BAD_KEY_PROVIDED);
@@ -1596,7 +1616,6 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      */
     protected function executeDelete(string $key, ?string $serverKey, int $time, \Closure $body): bool
     {
-        $this->pristine = false;
         $pk = $this->prefixedKey($key);
         if (!$this->checkKeyInternal($pk) || (null !== $serverKey && !$this->checkKeyInternal($serverKey))) {
             $this->setResult(self::RES_BAD_KEY_PROVIDED);
@@ -1758,6 +1777,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             self::OPT_TCP_KEEPALIVE,
             self::OPT_TCP_NODELAY,
             self::OPT_VERIFY_KEY,
+            self::OPT_SUPPORT_CAS,
         ], true);
     }
 
@@ -1772,7 +1792,6 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      */
     private function getMultiCommon(array $keys, ?string $serverKey, int $getFlags): array|false
     {
-        $this->pristine = false;
         $this->flushNetworkWrites();
 
         if ([] === $keys) {
@@ -1843,8 +1862,6 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         }
 
         if (null !== $valueCb) {
-            $this->pristine = false;
-
             return $this->doGetDelayedValueCallback($this->keyStrings($keys), $serverKey, $withCas, $valueCb);
         }
 
