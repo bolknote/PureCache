@@ -188,4 +188,82 @@ final class InternalComponentsTest extends TestCase
         self::assertSame('1', $r->getToken('c'));
         fclose($server);
     }
+
+    public function testMetaReaderArithmeticPassesThroughHeaderResponse(): void
+    {
+        // ms/mr return HD on success; the arithmetic helper must surface that
+        // verbatim instead of synthesising a VA-with-value, otherwise meta
+        // increment/decrement on an absent key would look like a `0` reply.
+        [$connection, $server] = $this->socketConnection("NS\r\n");
+        $reader = new MetaReader($connection);
+        $r = $reader->readArithmeticValue();
+
+        self::assertSame('NS', $r->code);
+        self::assertNull($r->value);
+        self::assertNull($r->errorMessage);
+        fclose($server);
+    }
+
+    public function testMetaReaderArithmeticSurfacesServerError(): void
+    {
+        [$connection, $server] = $this->socketConnection("SERVER_ERROR overloaded\r\n");
+        $reader = new MetaReader($connection);
+        $r = $reader->readArithmeticValue();
+
+        self::assertSame('SERVER_ERROR', $r->code);
+        self::assertSame('overloaded', $r->errorMessage);
+        fclose($server);
+    }
+
+    public function testMetaReaderReadOneReturnsEmptyValueForZeroSizedVa(): void
+    {
+        // `VA 0` is what the meta protocol returns for an empty stored value
+        // (e.g. an empty string written via `set`). The reader still has to
+        // consume the trailing CRLF so the next response on this socket isn't
+        // shifted by two bytes.
+        [$connection, $server] = $this->socketConnection("VA 0 f0 c7\r\n\r\nHD\r\n");
+        $reader = new MetaReader($connection);
+
+        $first = $reader->readOne(true);
+        $second = $reader->readOne(false);
+
+        self::assertSame('VA', $first->code);
+        self::assertSame('', $first->value);
+        self::assertSame('7', $first->getCas());
+        self::assertSame('HD', $second->code, 'CRLF after empty body must have been consumed');
+        fclose($server);
+    }
+
+    public function testMetaReaderReadOneDiscardsValueBlockWhenNotRequested(): void
+    {
+        // Callers that pre-checked the response code can opt out of buffering
+        // the value (e.g. probe queries). The reader still drains the body
+        // from the wire so a subsequent readOne() lands on the next response.
+        [$connection, $server] = $this->socketConnection("VA 5 f0 c1\r\nhello\r\nHD\r\n");
+        $reader = new MetaReader($connection);
+
+        $skipped = $reader->readOne(false);
+        $next = $reader->readOne(false);
+
+        self::assertSame('VA', $skipped->code);
+        self::assertNull($skipped->value, 'expectValueBlock=false must drop the body');
+        self::assertSame('HD', $next->code);
+        fclose($server);
+    }
+
+    public function testMetaReaderReadOneSurfacesProtocolErrorOnEmptyLine(): void
+    {
+        // Servers should never send an empty line, but if a Dragonfly fork
+        // does, we want a structured error rather than a hang on the next
+        // chunk read.
+        [$connection, $server] = $this->socketConnection("\r\n");
+        $reader = new MetaReader($connection);
+
+        $r = $reader->readOne(true);
+
+        self::assertSame('', $r->code);
+        self::assertSame('Empty response line', $r->errorMessage);
+        self::assertSame(MemcachedClient::RES_PROTOCOL_ERROR, $r->wireErrorResultCode());
+        fclose($server);
+    }
 }

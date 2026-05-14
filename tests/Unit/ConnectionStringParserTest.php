@@ -110,4 +110,54 @@ final class ConnectionStringParserTest extends TestCase
         $servers = ConnectionStringParser::parseServers('rediss://host:6380');
         self::assertSame([['host' => 'host', 'port' => 6380, 'weight' => 0]], $servers);
     }
+
+    public function testRedisUrlWithoutHostIsRejected(): void
+    {
+        // parse_url() yields {scheme:redis} but no host — must drop the entry
+        // rather than producing an unaddressable {host:''} record.
+        self::assertSame([], ConnectionStringParser::parseServers('redis://'));
+    }
+
+    public function testRedisUrlWithNonNumericDatabaseIsIgnored(): void
+    {
+        // The DB suffix is best-effort: callers expect an int, so when the
+        // path segment isn't `ctype_digit` we drop the field entirely instead
+        // of casting it to 0 (which would silently rebind clients to db 0).
+        self::assertSame(
+            [['host' => 'cache', 'port' => 6379, 'weight' => 0]],
+            ConnectionStringParser::parseServers('redis://cache:6379/main'),
+        );
+    }
+
+    public function testRedisUrlWithTrailingSlashHasNoDatabase(): void
+    {
+        // `/` after the port produces an empty path segment after ltrim — the
+        // parser must NOT emit `database => 0` for this case (path is just
+        // delimiter noise, not a real DB selector).
+        self::assertSame(
+            [['host' => 'cache', 'port' => 6379, 'weight' => 0]],
+            ConnectionStringParser::parseServers('redis://cache:6379/'),
+        );
+    }
+
+    public function testBracketedIpv6WithoutPortIsRejected(): void
+    {
+        // `[::1]` alone has neither port nor weight, so neither bracket-form
+        // regex matches; we must drop it rather than fall through to the
+        // unbracketed code path where `strrpos($host, ':')` would split the
+        // IPv6 literal on its own colons.
+        self::assertSame([], ConnectionStringParser::parseServers('[::1]'));
+    }
+
+    public function testParseServersStripsExtraWhitespaceBetweenTokens(): void
+    {
+        // Mixed delimiters (spaces, tabs, newlines, commas) is what
+        // libmemcached's `--SERVER=` parser tolerates; preg_split with
+        // PREG_SPLIT_NO_EMPTY is supposed to flatten them silently.
+        $servers = ConnectionStringParser::parseServers(",,  cache-a:11211 \t\n cache-b:11212  ,");
+        self::assertSame([
+            ['host' => 'cache-a', 'port' => 11211, 'weight' => 0],
+            ['host' => 'cache-b', 'port' => 11212, 'weight' => 0],
+        ], $servers);
+    }
 }
