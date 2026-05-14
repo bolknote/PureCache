@@ -20,6 +20,10 @@ final class RedisStatsAsMemcached
      */
     private const int DEFAULT_MAX_MEMORY = 8_589_934_592;
 
+    private function __construct()
+    {
+    }
+
     /** @var list<string> */
     private const array GENERAL_STAT_NAMES = [
         'pid', 'uptime', 'time', 'version', 'libevent', 'pointer_size', 'rusage_user', 'rusage_system',

@@ -12,10 +12,6 @@ namespace PureCache;
  */
 interface CacheClient
 {
-    public function __construct(?string $persistentId = null, ?callable $callback = null, ?string $connection_str = null);
-
-    public function __destruct();
-
     public function getResultCode(): int;
 
     public function getResultMessage(): string;

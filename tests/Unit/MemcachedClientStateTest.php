@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use PureCache\Memcached\Internal\MetaResult;
+use PureCache\AbstractCacheClient;
+use PureCache\Internal\CacheEntry;
 use PureCache\Memcached\MemcachedClient;
 
 final class MemcachedClientStateTest extends TestCase
@@ -13,9 +14,9 @@ final class MemcachedClientStateTest extends TestCase
     public function testExtendedValueIncludesZeroCasAndFlagsLikePecl(): void
     {
         $client = new MemcachedClient();
-        $method = new \ReflectionMethod(MemcachedClient::class, 'valueForGetFlags');
+        $method = new \ReflectionMethod(AbstractCacheClient::class, 'valueForGetFlags');
 
-        $extended = $method->invoke($client, 'value', new MetaResult('VA', ['f' => '0'], null), MemcachedClient::GET_EXTENDED);
+        $extended = $method->invoke($client, new CacheEntry('value', 0, 0), MemcachedClient::GET_EXTENDED);
 
         self::assertSame([
             'value' => 'value',
@@ -27,9 +28,9 @@ final class MemcachedClientStateTest extends TestCase
     public function testDelayedEntryIncludesZeroCasAndFlagsWhenRequested(): void
     {
         $client = new MemcachedClient();
-        $method = new \ReflectionMethod(MemcachedClient::class, 'delayedEntry');
+        $method = new \ReflectionMethod(AbstractCacheClient::class, 'delayedEntry');
 
-        $entry = $method->invoke($client, 'key', 'value', new MetaResult('VA', ['f' => '0'], null), true);
+        $entry = $method->invoke($client, 'key', new CacheEntry('value', 0, 0), true);
 
         self::assertSame([
             'key' => 'key',
@@ -747,6 +748,42 @@ final class MemcachedClientStateTest extends TestCase
             'valid' => MemcachedClient::RES_BAD_KEY_PROVIDED,
         ], $client->deleteMultiByKey('bad route', ['valid']));
         self::assertSame(MemcachedClient::RES_BAD_KEY_PROVIDED, $client->getResultCode());
+    }
+
+    public function testNonScalarBulkKeyIsRejectedWithBadKeyProvided(): void
+    {
+        $client = new MemcachedClient();
+
+        // PECL reports RES_BAD_KEY_PROVIDED when a bulk API receives a
+        // non-stringable key. Previously we silently coerced via implicit
+        // string casts, which produced confusing empty-key requests on the
+        // wire; the safer contract is to bail out before any network I/O.
+        self::assertFalse($client->getMulti(['valid', new \stdClass()]));
+        self::assertSame(MemcachedClient::RES_BAD_KEY_PROVIDED, $client->getResultCode());
+
+        self::assertFalse($client->setMulti(['valid' => 'ok'] + [42 => 'whatever']));
+        // Plain integer keys round-trip through (string) like memcached
+        // server-side, so this still fails for a different reason (no
+        // servers), but importantly does not blow up locally.
+        self::assertSame(MemcachedClient::RES_NO_SERVERS, $client->getResultCode());
+    }
+
+    public function testStringableObjectKeyIsAcceptedForBulkApis(): void
+    {
+        $client = new MemcachedClient();
+
+        $stringable = new class implements \Stringable {
+            public function __toString(): string
+            {
+                return 'string-from-object';
+            }
+        };
+
+        // Stringable objects are valid keys (matches PECL after string cast).
+        // Without any server this still returns false, but the failure code
+        // must be RES_NO_SERVERS — not RES_BAD_KEY_PROVIDED.
+        self::assertFalse($client->getMulti([$stringable]));
+        self::assertSame(MemcachedClient::RES_NO_SERVERS, $client->getResultCode());
     }
 
     public function testDeleteTimeIsRejectedBeforeNetworkAccess(): void

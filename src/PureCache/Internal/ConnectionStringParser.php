@@ -9,11 +9,21 @@ namespace PureCache\Internal;
  *
  * Supports comma- or whitespace-separated tokens, optional {@code --SERVER=} prefix, {@code host:port} and
  * {@code [ipv6]:port}, optional weight as a third segment ({@code host:port:weight} or {@code [ipv6]:port:weight}).
+ *
+ * Additionally understands URL-style tokens that carry per-server AUTH/database
+ * information for Redis backends:
+ *
+ *   - {@code redis://host[:port][/db]}
+ *   - {@code redis://:password@host[:port][/db]}
+ *   - {@code redis://user:password@host[:port][/db]}
+ *
+ * Those return the optional {@code user}, {@code password} and {@code database}
+ * fields which Memcached-only backends safely ignore.
  */
 final class ConnectionStringParser
 {
     /**
-     * @return list<array{host:string,port:int,weight:int}>
+     * @return list<array{host:string,port:int,weight:int,user?:string,password?:string,database?:int}>
      */
     public static function parseServers(string $connectionStr): array
     {
@@ -54,10 +64,14 @@ final class ConnectionStringParser
     }
 
     /**
-     * @return array{host:string,port:int,weight:int}|null
+     * @return array{host:string,port:int,weight:int,user?:string,password?:string,database?:int}|null
      */
     private static function parseOne(string $token): ?array
     {
+        if (str_starts_with($token, 'redis://') || str_starts_with($token, 'rediss://')) {
+            return self::parseRedisUrl($token);
+        }
+
         if (str_starts_with($token, '[')) {
             if (1 === preg_match('/^\[([^\]]+)]:(\d+):(\d+)$/', $token, $m)) {
                 return ['host' => $m[1], 'port' => (int) $m[2], 'weight' => (int) $m[3]];
@@ -79,5 +93,39 @@ final class ConnectionStringParser
         }
 
         return null;
+    }
+
+    /**
+     * @return array{host:string,port:int,weight:int,user?:string,password?:string,database?:int}|null
+     */
+    private static function parseRedisUrl(string $token): ?array
+    {
+        $parts = parse_url($token);
+        if (false === $parts || !isset($parts['host']) || '' === $parts['host']) {
+            return null;
+        }
+
+        $entry = [
+            'host' => $parts['host'],
+            'port' => $parts['port'] ?? 0,
+            'weight' => 0,
+        ];
+
+        if (isset($parts['user']) && '' !== $parts['user']) {
+            $entry['user'] = rawurldecode($parts['user']);
+        }
+
+        if (isset($parts['pass']) && '' !== $parts['pass']) {
+            $entry['password'] = rawurldecode($parts['pass']);
+        }
+
+        if (isset($parts['path']) && '' !== $parts['path']) {
+            $db = ltrim($parts['path'], '/');
+            if (ctype_digit($db)) {
+                $entry['database'] = (int) $db;
+            }
+        }
+
+        return $entry;
     }
 }

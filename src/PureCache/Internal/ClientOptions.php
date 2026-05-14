@@ -11,6 +11,10 @@ use PureCache\MemcachedConstants;
  */
 final class ClientOptions
 {
+    private function __construct()
+    {
+    }
+
     /**
      * @return array<int, mixed>
      */

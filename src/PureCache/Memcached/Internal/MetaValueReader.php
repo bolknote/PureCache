@@ -12,7 +12,11 @@ use PureCache\MemcachedConstants;
  */
 final class MetaValueReader
 {
-    public static function read(MetaReader $reader, int $serializer): DecodedMetaValue
+    private function __construct()
+    {
+    }
+
+    public static function read(MetaReader $reader, int $serializer, bool $allowSerializedClasses = false): DecodedMetaValue
     {
         $result = $reader->readOne(true);
         $wire = $result->wireErrorResultCode();
@@ -29,7 +33,7 @@ final class MetaValueReader
         }
 
         try {
-            $value = ValueCodec::decode($result->value, (int) ($result->getToken('f') ?? '0'), $serializer);
+            $value = ValueCodec::decode($result->value, (int) ($result->getToken('f') ?? '0'), $serializer, $allowSerializedClasses);
         } catch (\Exception) {
             return DecodedMetaValue::failure(MemcachedConstants::RES_PAYLOAD_FAILURE);
         }

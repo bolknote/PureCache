@@ -126,7 +126,19 @@ final class ValueCodec
         return [$payload, $flags];
     }
 
-    public static function decode(string $payload, int $flags, int $serializer): mixed
+    /**
+     * @param bool $allowSerializedClasses if {@code true}, PHP-serialized objects
+     *                                     are restored to their original classes,
+     *                                     matching PECL's default behavior. The
+     *                                     {@code false} default rejects objects
+     *                                     via {@code allowed_classes => false},
+     *                                     so untrusted cache values can't be
+     *                                     turned into POPs. Callers that need
+     *                                     full PECL parity must opt-in (see
+     *                                     {@code OPT_ALLOW_SERIALIZED_CLASSES}
+     *                                     in {@see ClientOptions}).
+     */
+    public static function decode(string $payload, int $flags, int $serializer, bool $allowSerializedClasses = false): mixed
     {
         if (self::hasCompression($flags)) {
             if (\strlen($payload) < 4) {
@@ -147,7 +159,7 @@ final class ValueCodec
             }
         }
 
-        return self::deserializePayload($payload, $flags, $serializer);
+        return self::deserializePayload($payload, $flags, $serializer, $allowSerializedClasses);
     }
 
     private static function serializeValue(mixed $value, int $serializer, int &$flags): string
@@ -220,14 +232,14 @@ final class ValueCodec
         };
     }
 
-    private static function deserializePayload(string $payload, int $flags, int $serializer): mixed
+    private static function deserializePayload(string $payload, int $flags, int $serializer, bool $allowSerializedClasses): mixed
     {
         return match (self::getType($flags)) {
             self::TYPE_STRING => $payload,
             self::TYPE_LONG => (int) $payload,
             self::TYPE_DOUBLE => self::parseDouble($payload),
             self::TYPE_BOOL => '' !== $payload && '1' === $payload[0],
-            self::TYPE_SERIALIZED => self::phpUnserialize($payload),
+            self::TYPE_SERIALIZED => self::phpUnserialize($payload, $allowSerializedClasses),
             self::TYPE_IGBINARY => self::igbinaryUnserialize($payload),
             self::TYPE_JSON => json_decode(
                 $payload,
@@ -240,9 +252,10 @@ final class ValueCodec
         };
     }
 
-    private static function phpUnserialize(string $payload): mixed
+    private static function phpUnserialize(string $payload, bool $allowSerializedClasses): mixed
     {
-        $value = @unserialize($payload, ['allowed_classes' => false]);
+        $options = $allowSerializedClasses ? [] : ['allowed_classes' => false];
+        $value = @unserialize($payload, $options);
         if (false === $value && 'b:0;' !== $payload) {
             throw new \RuntimeException('php unserialize failed');
         }
@@ -268,6 +281,15 @@ final class ValueCodec
         return msgpack_unpack($payload);
     }
 
+    /**
+     * Locale-independent double serialization.
+     *
+     * {@code sprintf('%.17G', ...)} and the {@code (float)} cast both honour
+     * {@code LC_NUMERIC}, which means a process where {@code setlocale(LC_NUMERIC,'de_DE')}
+     * has been called would serialize {@code 1.5} as {@code '1,5'} and then
+     * fail to parse it back. We pin LC_NUMERIC to {@code C} for the duration
+     * of the conversion to keep the wire format portable across locales.
+     */
     private static function formatDouble(float $v): string
     {
         if (is_nan($v)) {
@@ -278,7 +300,18 @@ final class ValueCodec
             return $v > 0 ? 'Infinity' : '-Infinity';
         }
 
-        return strtoupper(\sprintf('%.17G', $v));
+        $previous = setlocale(\LC_NUMERIC, '0');
+        if (\is_string($previous) && 'C' !== $previous) {
+            setlocale(\LC_NUMERIC, 'C');
+        }
+
+        try {
+            return strtoupper(\sprintf('%.17G', $v));
+        } finally {
+            if (\is_string($previous) && 'C' !== $previous) {
+                setlocale(\LC_NUMERIC, $previous);
+            }
+        }
     }
 
     private static function parseDouble(string $payload): float
@@ -287,8 +320,24 @@ final class ValueCodec
             'NaN', 'NAN' => \NAN,
             'Infinity', 'INF' => \INF,
             '-Infinity', '-INF' => -\INF,
-            default => (float) $payload,
+            default => self::castFloatLocaleIndependent($payload),
         };
+    }
+
+    private static function castFloatLocaleIndependent(string $payload): float
+    {
+        $previous = setlocale(\LC_NUMERIC, '0');
+        if (\is_string($previous) && 'C' !== $previous) {
+            setlocale(\LC_NUMERIC, 'C');
+        }
+
+        try {
+            return (float) $payload;
+        } finally {
+            if (\is_string($previous) && 'C' !== $previous) {
+                setlocale(\LC_NUMERIC, $previous);
+            }
+        }
     }
 
     /**

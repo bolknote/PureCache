@@ -60,4 +60,54 @@ final class ConnectionStringParserTest extends TestCase
         self::assertSame([], ConnectionStringParser::parseServers(''));
         self::assertSame([], ConnectionStringParser::parseServers('   '));
     }
+
+    public function testParsesRedisUrlWithoutAuthOrDatabase(): void
+    {
+        self::assertSame(
+            [['host' => 'redis-1', 'port' => 6380, 'weight' => 0]],
+            ConnectionStringParser::parseServers('redis://redis-1:6380'),
+        );
+    }
+
+    public function testParsesRedisUrlWithoutPortDefersDefaulting(): void
+    {
+        self::assertSame(
+            [['host' => 'redis-1', 'port' => 0, 'weight' => 0]],
+            ConnectionStringParser::parseServers('redis://redis-1'),
+        );
+    }
+
+    public function testParsesRedisUrlWithAclUserAndPassword(): void
+    {
+        self::assertSame(
+            [[
+                'host' => 'cache',
+                'port' => 6379,
+                'weight' => 0,
+                'user' => 'svc',
+                'password' => 's3cr3t!',
+                'database' => 3,
+            ]],
+            ConnectionStringParser::parseServers('redis://svc:s3cr3t%21@cache:6379/3'),
+        );
+    }
+
+    public function testParsesRedisUrlWithPasswordOnly(): void
+    {
+        self::assertSame(
+            [[
+                'host' => 'cache',
+                'port' => 6379,
+                'weight' => 0,
+                'password' => 'p@ss',
+            ]],
+            ConnectionStringParser::parseServers('redis://:p%40ss@cache:6379'),
+        );
+    }
+
+    public function testParsesRedissUrlAsRegularRedis(): void
+    {
+        $servers = ConnectionStringParser::parseServers('rediss://host:6380');
+        self::assertSame([['host' => 'host', 'port' => 6380, 'weight' => 0]], $servers);
+    }
 }

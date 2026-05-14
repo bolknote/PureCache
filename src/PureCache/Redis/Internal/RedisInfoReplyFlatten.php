@@ -12,6 +12,10 @@ namespace PureCache\Redis\Internal;
  */
 final class RedisInfoReplyFlatten
 {
+    private function __construct()
+    {
+    }
+
     /**
      * @param array<mixed, mixed> $reply
      *

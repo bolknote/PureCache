@@ -9,6 +9,10 @@ namespace PureCache\Internal;
  */
 final class ServerEndpoint
 {
+    private function __construct()
+    {
+    }
+
     public static function listType(string $host): string
     {
         if ('' !== $host && ('/' === $host[0] || ('.' === $host[0] && str_contains($host, '/')))) {

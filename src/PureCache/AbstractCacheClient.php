@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace PureCache;
 
+use PureCache\Internal\CacheEntry;
 use PureCache\Internal\ClientCoreState;
 use PureCache\Internal\ClientOptionApplier;
+use PureCache\Internal\ClientOptionResult;
 use PureCache\Internal\KeyFormatter;
 use PureCache\Internal\OptionEnvironment;
 use PureCache\Internal\ServerEndpoint;
+use PureCache\Internal\StoreMode;
 
 /**
  * Backend-agnostic PECL {@code \Memcached}-shaped surface.
@@ -45,7 +48,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         $pid = (null !== $persistentId && '' !== $persistentId) ? $persistentId : null;
 
         $reused = null !== $pid ? $this->lookupPersistentState($pid) : null;
-        if (null !== $reused) {
+        if ($reused instanceof ClientCoreState) {
             $this->core = $reused;
             $this->poolKey = $pid;
             $this->pristine = false;
@@ -57,7 +60,11 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
 
         if (null !== $connection_str && '' !== $connection_str) {
             foreach (Internal\ConnectionStringParser::parseServers($connection_str) as $s) {
-                $this->core->selector->addServer(['host' => $s['host'], 'port' => $s['port'], 'weight' => $s['weight']]);
+                if (0 === $s['port']) {
+                    $s['port'] = $this->defaultPort();
+                }
+
+                $this->core->selector->addServer($s);
             }
 
             $this->onPoolInvalidated();
@@ -80,7 +87,6 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         }
     }
 
-    #[\Override]
     public function __destruct()
     {
         if (null !== $this->poolKey) {
@@ -141,9 +147,10 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      *
      * @param list<string> $keys
      *
-     * @return list<array<string, mixed>>|null {@code null} signals fatal I/O error (result code already set)
+     * @return list<array<string, mixed>>|false {@code false} signals a fatal I/O error (result code already set);
+     *                                          an empty list means "all keys missed" (still success)
      */
-    abstract protected function doFetchBatch(array $keys, ?string $serverKey, bool $withCas): ?array;
+    abstract protected function doFetchBatch(array $keys, ?string $serverKey, bool $withCas): array|false;
 
     /**
      * @param list<string>                                     $keys
@@ -151,7 +158,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      */
     abstract protected function doGetDelayedValueCallback(array $keys, ?string $serverKey, bool $withCas, callable $valueCb): bool;
 
-    abstract protected function doStore(string $key, mixed $value, int $expiration, string $mode, ?string $serverKey, ?string $casToken): bool;
+    abstract protected function doStore(string $key, mixed $value, int $expiration, StoreMode $mode, ?string $serverKey, ?string $casToken): bool;
 
     /**
      * @param array<mixed> $items
@@ -162,7 +169,14 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
 
     abstract protected function doDelete(string $key, ?string $serverKey, int $time): bool;
 
-    abstract protected function doArith(string $key, int $offset, bool $decrement, ?string $serverKey, int $initialValue, int $expiry): int|false;
+    /**
+     * Memcached-style arithmetic primitive. {@code $autoCreate} mirrors PECL's
+     * "did the user pass initial/expiry?" detection — when {@code true}, the
+     * concrete backend is expected to forward {@code initial_value} and
+     * {@code expiry} so a missing key is autovivified instead of returning
+     * {@code RES_NOTFOUND}.
+     */
+    abstract protected function doArith(string $key, int $offset, bool $decrement, ?string $serverKey, int $initialValue, int $expiry, bool $autoCreate = false): int|false;
 
     /**
      * @return array<string, mixed>|false
@@ -207,6 +221,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     {
         return match ($code) {
             self::RES_SUCCESS => 'SUCCESS',
+            self::RES_END => 'END',
             self::RES_NOTFOUND => 'NOT FOUND',
             self::RES_DATA_EXISTS => 'DATA EXISTS',
             self::RES_NOTSTORED => 'NOT STORED',
@@ -215,6 +230,19 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             self::RES_BAD_KEY_PROVIDED => 'BAD KEY',
             self::RES_PAYLOAD_FAILURE => 'PAYLOAD FAILURE',
             self::RES_NOT_SUPPORTED => 'NOT SUPPORTED',
+            self::RES_INVALID_ARGUMENTS => 'INVALID ARGUMENTS',
+            self::RES_INVALID_HOST_PROTOCOL => 'INVALID HOST PROTOCOL',
+            self::RES_E2BIG => 'ITEM TOO BIG',
+            self::RES_FETCH_NOTFINISHED => 'FETCH NOT FINISHED',
+            self::RES_SOME_ERRORS => 'SOME ERRORS WERE REPORTED',
+            self::RES_WRITE_FAILURE => 'WRITE FAILURE',
+            self::RES_PARTIAL_READ => 'PARTIAL READ',
+            self::RES_BUFFERED => 'BUFFERED',
+            self::RES_SERVER_TEMPORARILY_DISABLED => 'SERVER TEMPORARILY DISABLED',
+            self::RES_SERVER_MEMORY_ALLOCATION_FAILURE => 'SERVER MEMORY ALLOCATION FAILURE',
+            self::RES_AUTH_PROBLEM => 'AUTH PROBLEM',
+            self::RES_AUTH_FAILURE => 'AUTH FAILURE',
+            self::RES_AUTH_CONTINUE => 'AUTH CONTINUE',
             default => 'UNKNOWN',
         };
     }
@@ -252,7 +280,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         $validated = [];
         foreach ($servers as $s) {
             if (\is_array($s)) {
-                if (isset($s[0], $s[1])) {
+                if (array_is_list($s) && isset($s[0], $s[1])) {
                     $w = $s[2] ?? 0;
                     $validated[] = ['host' => $this->coerceString($s[0]), 'port' => $this->coerceInt($s[1]), 'weight' => $this->coerceInt($w)];
                     continue;
@@ -726,13 +754,13 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     #[\Override]
     public function set(string $key, mixed $value, int $expiration = 0): bool
     {
-        return $this->doStore($key, $value, $expiration, 'S', null, null);
+        return $this->doStore($key, $value, $expiration, StoreMode::Set, null, null);
     }
 
     #[\Override]
     public function setByKey(string $server_key, string $key, mixed $value, int $expiration = 0): bool
     {
-        return $this->doStore($key, $value, $expiration, 'S', $server_key, null);
+        return $this->doStore($key, $value, $expiration, StoreMode::Set, $server_key, null);
     }
 
     #[\Override]
@@ -798,61 +826,61 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     #[\Override]
     public function add(string $key, mixed $value, int $expiration = 0): bool
     {
-        return $this->doStore($key, $value, $expiration, 'E', null, null);
+        return $this->doStore($key, $value, $expiration, StoreMode::Add, null, null);
     }
 
     #[\Override]
     public function addByKey(string $server_key, string $key, mixed $value, int $expiration = 0): bool
     {
-        return $this->doStore($key, $value, $expiration, 'E', $server_key, null);
+        return $this->doStore($key, $value, $expiration, StoreMode::Add, $server_key, null);
     }
 
     #[\Override]
     public function replace(string $key, mixed $value, int $expiration = 0): bool
     {
-        return $this->doStore($key, $value, $expiration, 'R', null, null);
+        return $this->doStore($key, $value, $expiration, StoreMode::Replace, null, null);
     }
 
     #[\Override]
     public function replaceByKey(string $server_key, string $key, mixed $value, int $expiration = 0): bool
     {
-        return $this->doStore($key, $value, $expiration, 'R', $server_key, null);
+        return $this->doStore($key, $value, $expiration, StoreMode::Replace, $server_key, null);
     }
 
     #[\Override]
     public function append(string $key, string $value): bool
     {
-        return $this->doStore($key, $value, 0, 'A', null, null);
+        return $this->doStore($key, $value, 0, StoreMode::Append, null, null);
     }
 
     #[\Override]
     public function appendByKey(string $server_key, string $key, string $value): bool
     {
-        return $this->doStore($key, $value, 0, 'A', $server_key, null);
+        return $this->doStore($key, $value, 0, StoreMode::Append, $server_key, null);
     }
 
     #[\Override]
     public function prepend(string $key, string $value): bool
     {
-        return $this->doStore($key, $value, 0, 'P', null, null);
+        return $this->doStore($key, $value, 0, StoreMode::Prepend, null, null);
     }
 
     #[\Override]
     public function prependByKey(string $server_key, string $key, string $value): bool
     {
-        return $this->doStore($key, $value, 0, 'P', $server_key, null);
+        return $this->doStore($key, $value, 0, StoreMode::Prepend, $server_key, null);
     }
 
     #[\Override]
     public function cas(string|int|float $cas_token, string $key, mixed $value, int $expiration = 0): bool
     {
-        return $this->doStore($key, $value, $expiration, 'S', null, (string) $cas_token);
+        return $this->doStore($key, $value, $expiration, StoreMode::Set, null, (string) $cas_token);
     }
 
     #[\Override]
     public function casByKey(string|int|float $cas_token, string $server_key, string $key, mixed $value, int $expiration = 0): bool
     {
-        return $this->doStore($key, $value, $expiration, 'S', $server_key, (string) $cas_token);
+        return $this->doStore($key, $value, $expiration, StoreMode::Set, $server_key, (string) $cas_token);
     }
 
     #[\Override]
@@ -899,25 +927,25 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     #[\Override]
     public function increment(string $key, int $offset = 1, int $initial_value = 0, int $expiry = 0): int|false
     {
-        return $this->doArith($key, $offset, false, null, $initial_value, $expiry);
+        return $this->doArith($key, $offset, false, null, $initial_value, $expiry, \func_num_args() >= 3);
     }
 
     #[\Override]
     public function decrement(string $key, int $offset = 1, int $initial_value = 0, int $expiry = 0): int|false
     {
-        return $this->doArith($key, $offset, true, null, $initial_value, $expiry);
+        return $this->doArith($key, $offset, true, null, $initial_value, $expiry, \func_num_args() >= 3);
     }
 
     #[\Override]
     public function incrementByKey(string $server_key, string $key, int $offset = 1, int $initial_value = 0, int $expiry = 0): int|false
     {
-        return $this->doArith($key, $offset, false, $server_key, $initial_value, $expiry);
+        return $this->doArith($key, $offset, false, $server_key, $initial_value, $expiry, \func_num_args() >= 4);
     }
 
     #[\Override]
     public function decrementByKey(string $server_key, string $key, int $offset = 1, int $initial_value = 0, int $expiry = 0): int|false
     {
-        return $this->doArith($key, $offset, true, $server_key, $initial_value, $expiry);
+        return $this->doArith($key, $offset, true, $server_key, $initial_value, $expiry, \func_num_args() >= 4);
     }
 
     // -----------------------------------------------------------------------
@@ -936,6 +964,12 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         return 'option is not supported by this cache backend';
     }
 
+    #[\Override]
+    public function applyCustomOption(int $option, mixed $value, ClientCoreState $core): ?ClientOptionResult
+    {
+        return null;
+    }
+
     // -----------------------------------------------------------------------
     // Shared helpers
     // -----------------------------------------------------------------------
@@ -952,7 +986,27 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
 
     protected function checkKeyInternal(string $key): bool
     {
-        return KeyFormatter::isValid($key, $this->core->optionBool(self::OPT_VERIFY_KEY, true));
+        return KeyFormatter::isValid(
+            $key,
+            $this->core->optionBool(self::OPT_VERIFY_KEY, true),
+            $this->maxKeyLength(),
+        );
+    }
+
+    /**
+     * Hard byte-length limit applied by {@see checkKeyInternal()}. Defaults to
+     * memcached's {@code KEY_MAX_LENGTH = 250} so the meta protocol stays
+     * happy; non-memcached backends (Redis, Ignite, …) override this to widen
+     * the limit to whatever their wire format actually supports.
+     *
+     * Exposed via {@see OptionEnvironment::maxKeyLength()} so the shared
+     * {@see ClientOptionApplier} can validate {@code OPT_PREFIX_KEY} against
+     * each backend's actual limit instead of memcached's 250-byte ceiling.
+     */
+    #[\Override]
+    public function maxKeyLength(): int
+    {
+        return 250;
     }
 
     protected function optionInt(int $option, int $default): int
@@ -986,6 +1040,93 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         return false;
     }
 
+    /**
+     * Pick the routing index for {@code $key}, honouring an optional server-key override.
+     */
+    protected function pickServerIndex(?string $serverKey, string $key): int
+    {
+        return null !== $serverKey
+            ? $this->core->selector->pickServerIndex($serverKey)
+            : $this->core->selector->pickServerIndex($this->routingKey($key));
+    }
+
+    /**
+     * Group {@code $keys} (already coerced to strings) by their target shard, returning
+     * pairs of {@code [originalKey, prefixedKey]}. {@code $serverKey} short-circuits the
+     * Ketama/modula lookup so every key in the call goes to the same shard.
+     *
+     * @param list<string> $keys
+     *
+     * @return array<int, list<array{0:string,1:string}>>
+     */
+    protected function groupKeysByServer(array $keys, ?string $serverKey): array
+    {
+        $byServer = [];
+        if (null === $serverKey) {
+            foreach ($keys as $ks) {
+                $idx = $this->core->selector->pickServerIndex($this->routingKey($ks));
+                $byServer[$idx][] = [$ks, $this->prefixedKey($ks)];
+            }
+
+            return $byServer;
+        }
+
+        $idx = $this->core->selector->pickServerIndex($serverKey);
+        foreach ($keys as $ks) {
+            $byServer[$idx][] = [$ks, $this->prefixedKey($ks)];
+        }
+
+        return $byServer;
+    }
+
+    /**
+     * Boilerplate-free pre-flight for an operation routed by a single PECL key.
+     *
+     * Validates the prefixed key + the (optional) server-key, ensures the server
+     * pool is non-empty, picks the routing index, and flips {@code pristine = false}.
+     * On any pre-flight failure the appropriate {@code RES_*} is set and the
+     * closure is not invoked; on a thrown protocol-level exception
+     * {@see recordServerFailure()} is invoked and the result is set to
+     * {@code RES_FAILURE}. In both failure cases the supplied {@code $failureValue}
+     * is returned so the caller can use the same sentinel as the PECL surface.
+     *
+     * @template TResult
+     *
+     * @param \Closure(int $serverIndex, string $prefixedKey): TResult $body
+     * @param TResult                                                  $failureValue value returned on any pre-flight failure or thrown exception
+     *
+     * @return TResult
+     */
+    protected function executeKeyed(
+        string $key,
+        ?string $serverKey,
+        \Closure $body,
+        mixed $failureValue = false,
+    ): mixed {
+        $this->pristine = false;
+        $pk = $this->prefixedKey($key);
+        if (!$this->checkKeyInternal($pk) || (null !== $serverKey && !$this->checkKeyInternal($serverKey))) {
+            $this->setResult(self::RES_BAD_KEY_PROVIDED);
+
+            return $failureValue;
+        }
+
+        if (!$this->ensureServersAvailable()) {
+            return $failureValue;
+        }
+
+        $idx = $this->pickServerIndex($serverKey, $key);
+
+        try {
+            return $body($idx, $pk);
+        } catch (\Throwable $throwable) {
+            $this->recordServerFailure($idx, $throwable);
+            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+
+            return $failureValue;
+        }
+    }
+
     protected function recordServerFailure(?int $serverIndex, \Throwable $throwable): void
     {
         $this->core->lastErrorErrno = $throwable->getCode();
@@ -1006,11 +1147,30 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         ];
     }
 
+    /**
+     * @return string the key in canonical string form, or {@code ''} (which
+     *                {@see checkKeyInternal()} will subsequently reject as
+     *                {@code RES_BAD_KEY_PROVIDED}) if {@code $key} is not a
+     *                memcached-compatible scalar or {@see \Stringable}
+     */
     protected function keyToString(mixed $key): string
     {
-        if (\is_scalar($key) || null === $key) {
+        if (\is_string($key)) {
+            return $key;
+        }
+
+        if (\is_int($key) || \is_float($key) || null === $key || \is_bool($key)) {
             return (string) $key;
         }
+
+        if ($key instanceof \Stringable) {
+            return (string) $key;
+        }
+
+        $this->setResult(
+            self::RES_BAD_KEY_PROVIDED,
+            'key must be a string, got '.get_debug_type($key),
+        );
 
         return '';
     }
@@ -1036,16 +1196,44 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             return 0;
         }
 
-        if (!ctype_digit($cas)) {
+        if ((string) (int) $cas !== $cas) {
             return $cas;
         }
 
-        $max = (string) \PHP_INT_MAX;
-        if (\strlen($cas) < \strlen($max) || (\strlen($cas) === \strlen($max) && strcmp($cas, $max) <= 0)) {
-            return (int) $cas;
+        return (int) $cas;
+    }
+
+    /**
+     * Shape a successful read into either the decoded value or the PECL
+     * {@code GET_EXTENDED} array ({@code ['value' => …, 'cas' => …, 'flags' => …]}).
+     */
+    protected function valueForGetFlags(CacheEntry $entry, int $getFlags): mixed
+    {
+        if (($getFlags & self::GET_EXTENDED) !== 0) {
+            return [
+                'value' => $entry->value,
+                'cas' => $entry->cas,
+                'flags' => $entry->userFlags,
+            ];
         }
 
-        return $cas;
+        return $entry->value;
+    }
+
+    /**
+     * Convert a cache hit into a {@code getDelayed}/{@code fetch} row.
+     *
+     * @return array<string, mixed>
+     */
+    protected function delayedEntry(string $key, CacheEntry $entry, bool $withCas): array
+    {
+        $row = ['key' => $key, 'value' => $entry->value];
+        if ($withCas) {
+            $row['cas'] = $entry->cas;
+            $row['flags'] = $entry->userFlags;
+        }
+
+        return $row;
     }
 
     protected function acceptDeleteTime(int $time): bool
@@ -1117,7 +1305,14 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             return false;
         }
 
-        $this->setResult(self::RES_SUCCESS);
+        // Preserve any RES_SOME_ERRORS that doGetMulti may have set when some
+        // server shards failed but at least one returned results. Defaulting
+        // to RES_SUCCESS here would silently swallow partial-failure signals
+        // and break PECL parity with multi-server getMulti fan-out.
+        if (self::RES_SOME_ERRORS !== $this->getResultCode()) {
+            $this->setResult(self::RES_SUCCESS);
+        }
+
         if (($getFlags & self::GET_PRESERVE_ORDER) !== 0) {
             $ordered = [];
             foreach ($keyStrings as $ks) {
@@ -1187,7 +1382,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         }
 
         $results = $this->doFetchBatch($batch['keys'], $batch['serverKey'], $batch['withCas']);
-        if (null === $results) {
+        if (false === $results) {
             $this->core->delayedResults = [];
             $this->core->delayedCursor = 0;
 

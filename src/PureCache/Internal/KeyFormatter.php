@@ -11,6 +11,10 @@ use PureCache\MemcachedConstants;
  */
 final class KeyFormatter
 {
+    private function __construct()
+    {
+    }
+
     /**
      * @param array<int, mixed> $options
      */
@@ -36,10 +40,14 @@ final class KeyFormatter
      * @param bool $strictPrintableAscii When {@code true} (default), enforces memcached printable-key rules.
      *                                   When {@code false} (PECL {@code OPT_VERIFY_KEY} off), only length is checked
      *                                   so binary keys can be sent with the meta {@code b} token via {@see encodeMetaKey()}.
+     * @param int  $maxLength            Hard upper bound on the key length in bytes. Defaults to memcached's
+     *                                   {@code KEY_MAX_LENGTH = 250}; Redis/Ignite-backed clients widen this
+     *                                   via {@see \PureCache\AbstractCacheClient::maxKeyLength()}.
      */
-    public static function isValid(string $key, bool $strictPrintableAscii = true): bool
+    public static function isValid(string $key, bool $strictPrintableAscii = true, int $maxLength = 250): bool
     {
-        if ('' === $key || \strlen($key) > 250) {
+        $length = \strlen($key);
+        if (0 === $length || $length > $maxLength) {
             return false;
         }
 

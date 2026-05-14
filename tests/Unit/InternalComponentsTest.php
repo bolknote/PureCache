@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use PureCache\Internal\ClientCoreState;
 use PureCache\Internal\ClientOptionApplier;
+use PureCache\Internal\ClientOptionResult;
 use PureCache\Internal\KeyFormatter;
 use PureCache\Internal\OptionEnvironment;
 use PureCache\Internal\ValueCodec;
@@ -94,6 +96,16 @@ final class InternalComponentsTest extends TestCase
             {
                 return 'option is not supported by the pure PHP meta protocol client';
             }
+
+            public function applyCustomOption(int $option, mixed $value, ClientCoreState $core): ?ClientOptionResult
+            {
+                return null;
+            }
+
+            public function maxKeyLength(): int
+            {
+                return 250;
+            }
         };
     }
 
@@ -137,6 +149,20 @@ final class InternalComponentsTest extends TestCase
         self::assertTrue($payload->isFailure());
         self::assertSame(MemcachedClient::RES_PAYLOAD_FAILURE, $payload->errorCode);
         fclose($payloadServer);
+    }
+
+    public function testMetaValueReaderReportsGenericFailureForUnknownResponseCode(): void
+    {
+        // HD/OK-style header replies are valid for ms/md but never for mg's
+        // value path. The reader has to translate them into RES_FAILURE so
+        // higher-level callers don't read a stale value out of the cache.
+        [$connection, $server] = $this->socketConnection("HD\r\n");
+
+        $result = MetaValueReader::read(new MetaReader($connection), MemcachedClient::SERIALIZER_PHP);
+
+        self::assertTrue($result->isFailure());
+        self::assertSame(MemcachedClient::RES_FAILURE, $result->errorCode);
+        fclose($server);
     }
 
     public function testMetaReaderArithmeticAcceptsBareDecimalLine(): void

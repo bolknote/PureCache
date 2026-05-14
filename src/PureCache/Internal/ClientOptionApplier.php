@@ -18,6 +18,11 @@ final class ClientOptionApplier
 {
     public static function apply(ClientCoreState $core, int $option, mixed $value, OptionEnvironment $env): ClientOptionResult
     {
+        $custom = $env->applyCustomOption($option, $value, $core);
+        if ($custom instanceof ClientOptionResult) {
+            return $custom;
+        }
+
         if (MemcachedConstants::OPT_LIBKETAMA_COMPATIBLE === $option) {
             self::applyLibketamaCompatible($core, (bool) $value);
             $env->onPoolInvalidated();
@@ -47,7 +52,7 @@ final class ClientOptionApplier
         }
 
         if (MemcachedConstants::OPT_PREFIX_KEY === $option) {
-            return self::applyPrefix($core, $option, $value);
+            return self::applyPrefix($core, $option, $value, $env);
         }
 
         if (MemcachedConstants::OPT_SERIALIZER === $option) {
@@ -134,14 +139,15 @@ final class ClientOptionApplier
         return ClientOptionResult::success();
     }
 
-    private static function applyPrefix(ClientCoreState $core, int $option, mixed $value): ClientOptionResult
+    private static function applyPrefix(ClientCoreState $core, int $option, mixed $value, OptionEnvironment $env): ClientOptionResult
     {
         $prefix = ClientOptions::stringValue($value);
         if (null === $prefix) {
             return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
         }
 
-        if ('' !== $prefix && !KeyFormatter::isValid($prefix)) {
+        $strict = $core->optionBool(MemcachedConstants::OPT_VERIFY_KEY, true);
+        if ('' !== $prefix && !KeyFormatter::isValid($prefix, $strict, $env->maxKeyLength())) {
             return ClientOptionResult::failure(MemcachedConstants::RES_BAD_KEY_PROVIDED);
         }
 
@@ -254,6 +260,7 @@ final class ClientOptionApplier
             MemcachedConstants::OPT_HASH_WITH_PREFIX_KEY,
             MemcachedConstants::OPT_NOREPLY,
             MemcachedConstants::OPT_BUFFER_WRITES,
+            MemcachedConstants::OPT_ALLOW_SERIALIZED_CLASSES,
         ], true);
     }
 

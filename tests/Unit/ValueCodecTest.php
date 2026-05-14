@@ -92,6 +92,75 @@ final class ValueCodecTest extends TestCase
         self::assertFalse(ValueCodec::decode('true', ValueCodec::TYPE_BOOL, MemcachedClient::SERIALIZER_PHP));
     }
 
+    public function testPhpSerializedClassesAreSafeByDefault(): void
+    {
+        $value = new \DateTimeImmutable('2026-05-14T12:00:00Z');
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_PHP,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+        );
+
+        $decoded = ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP);
+        self::assertInstanceOf(\__PHP_Incomplete_Class::class, $decoded);
+    }
+
+    public function testPhpSerializedClassesRehydrateOnOptIn(): void
+    {
+        $value = new \DateTimeImmutable('2026-05-14T12:00:00Z');
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_PHP,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+        );
+
+        $decoded = ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP, true);
+        self::assertInstanceOf(\DateTimeImmutable::class, $decoded);
+        self::assertSame($value->getTimestamp(), $decoded->getTimestamp());
+    }
+
+    public function testFloatRoundTripsUnderEuropeanLocale(): void
+    {
+        $previous = setlocale(\LC_NUMERIC, '0');
+
+        try {
+            $applied = setlocale(\LC_NUMERIC, 'de_DE.UTF-8', 'de_DE', 'German_Germany.UTF-8');
+            if (false === $applied) {
+                self::markTestSkipped('de_DE locale not available on this host');
+            }
+
+            [$payload, $flags] = ValueCodec::encode(
+                3.1415926535,
+                MemcachedClient::SERIALIZER_PHP,
+                false,
+                MemcachedClient::COMPRESSION_ZLIB,
+                3,
+                2000,
+                1.30,
+                -1,
+            );
+
+            self::assertStringNotContainsString(',', $payload);
+
+            $decoded = ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP);
+            self::assertSame(3.1415926535, $decoded);
+        } finally {
+            if (\is_string($previous)) {
+                setlocale(\LC_NUMERIC, $previous);
+            }
+        }
+    }
+
     public function testPhpSerializedRoundTrip(): void
     {
         $value = ['a' => 1, 'nested' => ['b' => true]];
@@ -393,6 +462,107 @@ final class ValueCodecTest extends TestCase
         $this->expectExceptionMessage('zstd not available');
 
         ValueCodec::decode(pack('V', 10).'payload', ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_ZSTD, MemcachedClient::SERIALIZER_PHP);
+    }
+
+    public function testUnavailableFastlzDecompressionFailsFast(): void
+    {
+        if (\function_exists('fastlz_decompress')) {
+            self::markTestSkipped('fastlz is available');
+        }
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('fastlz not available');
+
+        ValueCodec::decode(pack('V', 10).'payload', ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_FASTLZ, MemcachedClient::SERIALIZER_PHP);
+    }
+
+    public function testUnavailableMsgpackDeserializationFailsFast(): void
+    {
+        if (\function_exists('msgpack_unpack')) {
+            self::markTestSkipped('msgpack is available');
+        }
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('msgpack not available');
+
+        ValueCodec::decode('ignored', ValueCodec::TYPE_MSGPACK, MemcachedClient::SERIALIZER_MSGPACK);
+    }
+
+    public function testUnavailableIgbinaryDeserializationFailsFast(): void
+    {
+        if (\function_exists('igbinary_unserialize')) {
+            self::markTestSkipped('igbinary is available');
+        }
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('igbinary not available');
+
+        ValueCodec::decode('ignored', ValueCodec::TYPE_IGBINARY, MemcachedClient::SERIALIZER_IGBINARY);
+    }
+
+    public function testInvalidPhpSerializedPayloadFailsLoudly(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('php unserialize failed');
+
+        ValueCodec::decode('not-a-serialized-payload', ValueCodec::TYPE_SERIALIZED, MemcachedClient::SERIALIZER_PHP);
+    }
+
+    public function testPhpSerializedFalseDecodesAsBooleanFalse(): void
+    {
+        // 'b:0;' deserializes to false; we must NOT treat that as a failure
+        // (PECL doesn't), otherwise a legitimately-stored false value would
+        // be reported as a missing key.
+        self::assertFalse(ValueCodec::decode('b:0;', ValueCodec::TYPE_SERIALIZED, MemcachedClient::SERIALIZER_PHP));
+    }
+
+    public function testSetCompressionFlagsTogglesCorrectBitsForEachKnownType(): void
+    {
+        $known = [
+            MemcachedClient::COMPRESSION_ZLIB => ValueCodec::COMPRESSION_ZLIB,
+            MemcachedClient::COMPRESSION_FASTLZ => ValueCodec::COMPRESSION_FASTLZ,
+            MemcachedClient::COMPRESSION_ZSTD => ValueCodec::COMPRESSION_ZSTD,
+        ];
+
+        foreach ($known as $type => $bit) {
+            $flags = 0;
+            ValueCodec::setCompressionFlags($flags, $type);
+
+            self::assertTrue(ValueCodec::hasCompression($flags));
+            self::assertSame($bit, $flags & $bit);
+            // Make sure switching to another type clears the previously-set bits
+            // so we don't accidentally OR multiple compression algorithms.
+            ValueCodec::setCompressionFlags($flags, $type);
+            self::assertSame($bit, $flags & (ValueCodec::COMPRESSION_ZLIB | ValueCodec::COMPRESSION_FASTLZ | ValueCodec::COMPRESSION_ZSTD));
+        }
+    }
+
+    public function testSetCompressionFlagsDefaultsToZlibForUnknownType(): void
+    {
+        $flags = 0;
+        ValueCodec::setCompressionFlags($flags, 999);
+
+        self::assertTrue(ValueCodec::hasCompression($flags));
+        self::assertSame(MemcachedClient::COMPRESSION_ZLIB, ValueCodec::compressionKind($flags));
+    }
+
+    public function testCompressionKindReportsFastlzWhenItsFlagBitIsSet(): void
+    {
+        // Direct probe of the compressionKind FastLZ branch, which the
+        // ZLIB-default round-trips and the zstd-priority test don't exercise.
+        $flags = ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_FASTLZ;
+
+        self::assertSame(MemcachedClient::COMPRESSION_FASTLZ, ValueCodec::compressionKind($flags));
+    }
+
+    public function testCompressionKindPrefersZstdOverZlibAndFastlzWhenMultipleBitsAreSet(): void
+    {
+        // The lookup is priority-based (zstd > fastlz > zlib) so that a value
+        // accidentally tagged with two algorithm bits doesn't return zlib and
+        // get decompressed with the wrong codec.
+        $flags = ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_ZSTD | ValueCodec::COMPRESSION_FASTLZ | ValueCodec::COMPRESSION_ZLIB;
+
+        self::assertSame(MemcachedClient::COMPRESSION_ZSTD, ValueCodec::compressionKind($flags));
     }
 
     private function borderlineCompressiblePayload(): string

@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace PureCache\Redis;
 
 use PureCache\Internal\ClientCoreState;
-use PureCache\Internal\ClientOptions;
-use PureCache\Internal\ServerSelector;
 
 /**
  * Mutable connection + option state shared by {@see RedisClient} instances using the same
@@ -24,9 +22,7 @@ final class RedisClientState extends ClientCoreState
     public static function createFresh(?string $persistentId = null): self
     {
         $c = new self();
-        $c->persistentId = $persistentId;
-        $c->selector = new ServerSelector();
-        $c->options = ClientOptions::defaults();
+        $c->initDefaults($persistentId);
 
         return $c;
     }

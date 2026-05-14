@@ -11,6 +11,10 @@ use PureCache\MemcachedConstants;
  */
 final class KeyHasher
 {
+    private function __construct()
+    {
+    }
+
     public static function hash(string $key, int $algorithm): int
     {
         return match ($algorithm) {

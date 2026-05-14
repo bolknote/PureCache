@@ -25,4 +25,27 @@ interface OptionEnvironment
 
     /** Optional human-friendly reason for {@see isUnsupportedOption()}. */
     public function unsupportedOptionMessage(): string;
+
+    /**
+     * Hard byte-length limit this backend applies to keys (and, transitively,
+     * to {@code OPT_PREFIX_KEY}). Memcached returns the protocol-mandated
+     * {@code KEY_MAX_LENGTH = 250}; Redis/Ignite-backed clients widen it.
+     */
+    public function maxKeyLength(): int;
+
+    /**
+     * Optional pre-applier hook for backend-specific options.
+     *
+     * Implementations may either:
+     *  - return a {@see ClientOptionResult} to short-circuit the default applier
+     *    (e.g. backend-private {@code OPT_*} constants, post-apply re-connection,
+     *    custom validation rules), or
+     *  - return {@code null} to let {@see ClientOptionApplier} continue with its
+     *    built-in handling for the option.
+     *
+     * The default implementation in {@see \PureCache\AbstractCacheClient} always
+     * returns {@code null}; concrete clients override it only when they own
+     * options that the shared applier does not know about.
+     */
+    public function applyCustomOption(int $option, mixed $value, ClientCoreState $core): ?ClientOptionResult;
 }
