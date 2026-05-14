@@ -333,6 +333,24 @@ final class MemcachedIntegrationTest extends TestCase
         self::assertTrue($m->deleteByKey('route-a', $key));
     }
 
+    public function testAddByKeyAndReplaceByKeyHonorRoutingAndExistence(): void
+    {
+        $m = $this->client();
+        $key = $this->key('pure_bykey_addreplace');
+
+        self::assertFalse($m->replaceByKey('route-add', $key, 'first', 60));
+        self::assertSame(MemcachedClient::RES_NOTSTORED, $m->getResultCode());
+
+        self::assertTrue($m->addByKey('route-add', $key, 'first', 60));
+        self::assertFalse($m->addByKey('route-add', $key, 'duplicate', 60));
+        self::assertSame(MemcachedClient::RES_NOTSTORED, $m->getResultCode());
+
+        self::assertTrue($m->replaceByKey('route-add', $key, 'second', 60));
+        self::assertSame('second', $m->getByKey('route-add', $key));
+
+        self::assertTrue($m->deleteByKey('route-add', $key));
+    }
+
     public function testByKeyMultiCasTouchAndStringMutation(): void
     {
         $m = $this->client();
