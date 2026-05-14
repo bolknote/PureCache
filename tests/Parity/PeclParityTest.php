@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PureCache\Tests\Parity;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use PureCache\Memcached\MemcachedClient;
 
@@ -423,6 +424,99 @@ final class PeclParityTest extends TestCase
                     'withoutCas' => $withoutCas,
                 ];
             },
+        );
+    }
+
+    /**
+     * Pin OPT_LIBKETAMA_HASH to PECL's exact contract. The dial is a
+     * read-alias of OPT_HASH (libmemcached writes through to the same
+     * hashkit field that backs MEMCACHED_BEHAVIOR_HASH) and the setter is
+     * routed through {@code zval_get_long()} → libmemcached → hashkit; the
+     * only value that fails is HASH_HSIEH because PECL builds without
+     * HAVE_HSIEH_HASH. The probe matrix mirrors a runtime audit against a
+     * live ext-memcached: drop any case here and parity bugs slip in
+     * silently for callers porting from the C extension.
+     *
+     * @return iterable<string, array{mixed, int}>
+     */
+    public static function libketamaHashCoercionMatrix(): iterable
+    {
+        yield 'int_default' => [\Memcached::HASH_DEFAULT, \Memcached::RES_SUCCESS];
+        yield 'int_md5' => [\Memcached::HASH_MD5, \Memcached::RES_SUCCESS];
+        yield 'int_crc' => [\Memcached::HASH_CRC, \Memcached::RES_SUCCESS];
+        yield 'int_murmur' => [\Memcached::HASH_MURMUR, \Memcached::RES_SUCCESS];
+        yield 'int_hsieh' => [\Memcached::HASH_HSIEH, \Memcached::RES_INVALID_ARGUMENTS];
+        yield 'int_bogus' => [9999, \Memcached::RES_SUCCESS];
+        yield 'int_negative' => [-3, \Memcached::RES_SUCCESS];
+        yield 'string_numeric' => ['5', \Memcached::RES_SUCCESS];
+        yield 'string_hsieh_numeric' => ['7', \Memcached::RES_INVALID_ARGUMENTS];
+        yield 'string_mixed' => ['3abc', \Memcached::RES_SUCCESS];
+        yield 'string_empty' => ['', \Memcached::RES_SUCCESS];
+        yield 'string_word' => ['not-an-int', \Memcached::RES_SUCCESS];
+        yield 'null' => [null, \Memcached::RES_SUCCESS];
+        yield 'bool_true' => [true, \Memcached::RES_SUCCESS];
+        yield 'bool_false' => [false, \Memcached::RES_SUCCESS];
+        yield 'float_safe' => [1.5, \Memcached::RES_SUCCESS];
+        yield 'float_truncates_to_hsieh' => [7.9, \Memcached::RES_INVALID_ARGUMENTS];
+    }
+
+    #[DataProvider('libketamaHashCoercionMatrix')]
+    public function testLibketamaHashCoercionMatchesPecl(mixed $input, int $expectedRc): void
+    {
+        $pecl = new \Memcached();
+        $pure = new MemcachedClient();
+
+        $peclOk = @$pecl->setOption(\Memcached::OPT_LIBKETAMA_HASH, $input);
+        $pureOk = $pure->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, $input);
+
+        self::assertSame($peclOk, $pureOk, 'setOption boolean return drifts from PECL');
+        self::assertSame($expectedRc, $pecl->getResultCode(), 'parity matrix entry is stale vs PECL');
+        self::assertSame($pecl->getResultCode(), $pure->getResultCode(), 'getResultCode drifts from PECL');
+    }
+
+    public function testLibketamaHashGetterTracksOptHashAcrossCascade(): void
+    {
+        $pecl = new \Memcached();
+        $pure = new MemcachedClient();
+
+        self::assertSame(
+            $pecl->getOption(\Memcached::OPT_LIBKETAMA_HASH),
+            $pure->getOption(MemcachedClient::OPT_LIBKETAMA_HASH),
+            'fresh-client OPT_LIBKETAMA_HASH must equal default OPT_HASH',
+        );
+
+        foreach ([\Memcached::HASH_CRC, \Memcached::HASH_MURMUR, \Memcached::HASH_FNV1_64] as $hash) {
+            $pecl->setOption(\Memcached::OPT_HASH, $hash);
+            $pure->setOption(MemcachedClient::OPT_HASH, $hash);
+            self::assertSame(
+                $pecl->getOption(\Memcached::OPT_LIBKETAMA_HASH),
+                $pure->getOption(MemcachedClient::OPT_LIBKETAMA_HASH),
+                'OPT_LIBKETAMA_HASH must read-alias OPT_HASH for hash='.$hash,
+            );
+        }
+
+        // LIBKETAMA_COMPATIBLE=true cascades OPT_HASH→MD5; the alias must follow.
+        $pecl->setOption(\Memcached::OPT_LIBKETAMA_COMPATIBLE, true);
+        $pure->setOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE, true);
+        self::assertSame(
+            $pecl->getOption(\Memcached::OPT_LIBKETAMA_HASH),
+            $pure->getOption(MemcachedClient::OPT_LIBKETAMA_HASH),
+            'OPT_LIBKETAMA_HASH after LIBKETAMA_COMPATIBLE=true must mirror PECL',
+        );
+
+        // Setter is a no-op for routing: the getter must keep tracking OPT_HASH,
+        // not the value just passed in.
+        $pecl->setOption(\Memcached::OPT_LIBKETAMA_HASH, \Memcached::HASH_MURMUR);
+        $pure->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, MemcachedClient::HASH_MURMUR);
+        self::assertSame(
+            $pecl->getOption(\Memcached::OPT_LIBKETAMA_HASH),
+            $pure->getOption(MemcachedClient::OPT_LIBKETAMA_HASH),
+            'setOption(OPT_LIBKETAMA_HASH) must not move the getter off OPT_HASH',
+        );
+        self::assertSame(
+            $pecl->getOption(\Memcached::OPT_HASH),
+            $pure->getOption(MemcachedClient::OPT_HASH),
+            'setOption(OPT_LIBKETAMA_HASH) must not move OPT_HASH either',
         );
     }
 

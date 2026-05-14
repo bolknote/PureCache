@@ -83,6 +83,61 @@ final class ClientOptions
     }
 
     /**
+     * PHP-side equivalent of PECL's {@code zval_get_long()} — the same
+     * widening rules ext-memcached relies on for options whose setter is
+     * defined in {@code php_memcached.c} as
+     * {@code lval = zval_get_long(value)} (e.g. {@code OPT_LIBKETAMA_HASH}).
+     *
+     * Use this — rather than the stricter {@see intValue()} — when matching
+     * PECL behaviour for options that are documented as "accepts an integer"
+     * but where the C extension silently coerces everything else (bools,
+     * strings, floats, arrays, …). The coercion must never throw: PECL
+     * surfaces objects/resources as the conventional {@code 1}/numeric id,
+     * not as a fatal error inside {@code setOption()}.
+     *
+     * Rules (mirror {@code Zend/zend_operators.c::zval_get_long_func()}):
+     *  - int/resource → as is
+     *  - float       → truncated toward zero
+     *  - bool        → 1 or 0
+     *  - null        → 0
+     *  - string      → leading numeric portion, 0 if non-numeric
+     *  - array       → 1 if non-empty, 0 if empty
+     *  - object      → 1 (PECL emits an E_NOTICE; we silently coerce)
+     */
+    public static function peclLongValue(mixed $value): int
+    {
+        if (\is_int($value)) {
+            return $value;
+        }
+
+        if (\is_float($value)) {
+            return (int) $value;
+        }
+
+        if (\is_bool($value)) {
+            return $value ? 1 : 0;
+        }
+
+        if (null === $value) {
+            return 0;
+        }
+
+        if (\is_string($value)) {
+            return (int) $value;
+        }
+
+        if (\is_array($value)) {
+            return [] === $value ? 0 : 1;
+        }
+
+        if (\is_resource($value)) {
+            return (int) $value;
+        }
+
+        return 1;
+    }
+
+    /**
      * Picks the initial {@code OPT_SERIALIZER} the same way PECL does: igbinary
      * first if its extension is loaded, then msgpack, otherwise PHP's native
      * {@code serialize()}. Apps that switch backends shouldn't see the wire

@@ -38,6 +38,10 @@ final class ClientOptionApplier
             return self::applyHash($core, $option, $value, $env);
         }
 
+        if (MemcachedConstants::OPT_LIBKETAMA_HASH === $option) {
+            return self::applyLibketamaHash($value);
+        }
+
         if ($env->isUnsupportedOption($option) || self::isGloballyUnsupported($option)) {
             return ClientOptionResult::failure(MemcachedConstants::RES_NOT_SUPPORTED, $env->unsupportedOptionMessage());
         }
@@ -139,6 +143,38 @@ final class ClientOptionApplier
         $core->options[$option] = $hash;
         $core->selector->setHashOption($hash);
         $env->onPoolInvalidated();
+
+        return ClientOptionResult::success();
+    }
+
+    /**
+     * PECL routes {@code OPT_LIBKETAMA_HASH} through the generic
+     * {@code default:} arm of {@code php_memc_set_option()}, which:
+     *  1. coerces the user-supplied value with {@code zval_get_long()} —
+     *     booleans, nulls, numeric/non-numeric strings, floats, arrays and
+     *     objects all flow through PHP's standard int widening rules
+     *     instead of being rejected;
+     *  2. forwards the coerced long to libmemcached's
+     *     {@code MEMCACHED_BEHAVIOR_KETAMA_HASH}, whose hashkit backend
+     *     accepts every documented {@code HASH_*} id and silently accepts
+     *     out-of-range values like 9999 — except {@code HASH_HSIEH}, which
+     *     PECL builds without ({@code HAVE_HSIEH_HASH=disabled}) and the
+     *     hashkit setter therefore rejects with {@code INVALID_ARGUMENT}.
+     *
+     * Empirically the dial does not move keys around (the getter
+     * read-aliases {@code OPT_HASH} via
+     * {@see \PureCache\AbstractCacheClient::getOption()} and routing is
+     * driven by {@code OPT_HASH}). PureCache mirrors that contract:
+     * coerce through {@see ClientOptions::peclLongValue()}, reject HSIEH,
+     * return success for everything else with no observable state change.
+     */
+    private static function applyLibketamaHash(mixed $value): ClientOptionResult
+    {
+        $hash = ClientOptions::peclLongValue($value);
+
+        if (MemcachedConstants::HASH_HSIEH === $hash) {
+            return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
+        }
 
         return ClientOptionResult::success();
     }
@@ -349,7 +385,6 @@ final class ClientOptionApplier
             MemcachedConstants::OPT_LOAD_FROM_FILE,
             MemcachedConstants::OPT_SUPPORT_CAS,
             MemcachedConstants::OPT_TCP_KEEPIDLE,
-            MemcachedConstants::OPT_LIBKETAMA_HASH,
         ], true);
     }
 }

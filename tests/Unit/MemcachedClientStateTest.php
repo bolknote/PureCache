@@ -457,8 +457,158 @@ final class MemcachedClientStateTest extends TestCase
         self::assertSame(8192, $client->getOption(MemcachedClient::OPT_SOCKET_RECV_SIZE));
         self::assertTrue($client->setOption(MemcachedClient::OPT_USER_DATA, ['user' => true]));
         self::assertSame(['user' => true], $client->getOption(MemcachedClient::OPT_USER_DATA));
-        self::assertFalse($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, MemcachedClient::HASH_MD5));
-        self::assertSame(MemcachedClient::RES_NOT_SUPPORTED, $client->getResultCode());
+    }
+
+    /**
+     * PECL's OPT_LIBKETAMA_HASH is a read-alias of OPT_HASH: it never
+     * stores its own value, and the getter always reports whatever
+     * OPT_HASH currently is — including the MD5 cascade triggered by
+     * OPT_LIBKETAMA_COMPATIBLE=true and the value left behind by direct
+     * OPT_HASH writes. Pinning the contract here keeps the AbstractCacheClient
+     * read-alias intact against accidental refactors.
+     */
+    public function testLibketamaHashGetterReadAliasesOptHash(): void
+    {
+        $client = new MemcachedClient();
+
+        self::assertSame(
+            $client->getOption(MemcachedClient::OPT_HASH),
+            $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH),
+        );
+
+        self::assertTrue($client->setOption(MemcachedClient::OPT_HASH, MemcachedClient::HASH_CRC));
+        self::assertSame(MemcachedClient::HASH_CRC, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
+
+        self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE, true));
+        self::assertSame(MemcachedClient::HASH_MD5, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
+
+        self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE, false));
+        self::assertSame(MemcachedClient::HASH_DEFAULT, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
+    }
+
+    /**
+     * @return array<string, array{mixed}>
+     */
+    public static function libketamaHashAcceptedValues(): array
+    {
+        return [
+            'int_md5' => [MemcachedClient::HASH_MD5],
+            'int_crc' => [MemcachedClient::HASH_CRC],
+            'int_murmur' => [MemcachedClient::HASH_MURMUR],
+            'int_bogus' => [9999],
+            'int_negative' => [-3],
+            'string_numeric' => ['5'],
+            'string_mixed' => ['3abc'],
+            'string_empty' => [''],
+            'string_word' => ['not-an-int'],
+            'null' => [null],
+            'bool_true' => [true],
+            'bool_false' => [false],
+            'float_safe' => [1.5],
+            'array_nonempty' => [[1, 2]],
+            'array_empty' => [[]],
+        ];
+    }
+
+    /**
+     * PECL routes OPT_LIBKETAMA_HASH through {@code zval_get_long()} →
+     * libmemcached → hashkit. Hashkit accepts every coerced long except
+     * HASH_HSIEH (PECL builds without HAVE_HSIEH_HASH), and the dial
+     * never visibly mutates state — the getter still tracks OPT_HASH and
+     * routing is unchanged. Mirror that no-op-success contract so callers
+     * porting from ext-memcached see identical setOption returns.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('libketamaHashAcceptedValues')]
+    public function testLibketamaHashSetterAcceptsAnyPeclCoercibleValueAsNoop(mixed $value): void
+    {
+        $client = new MemcachedClient();
+        // Anchor OPT_HASH at a known value so we can prove the setter
+        // didn't move it.
+        self::assertTrue($client->setOption(MemcachedClient::OPT_HASH, MemcachedClient::HASH_MURMUR));
+
+        self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, $value));
+        self::assertSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
+        self::assertSame(MemcachedClient::HASH_MURMUR, $client->getOption(MemcachedClient::OPT_HASH));
+        self::assertSame(MemcachedClient::HASH_MURMUR, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
+    }
+
+    /**
+     * @return array<string, array{mixed}>
+     */
+    public static function libketamaHashRejectedValues(): array
+    {
+        return [
+            'int_hsieh' => [MemcachedClient::HASH_HSIEH],
+            'string_hsieh' => ['7'],
+            'float_truncates_to_hsieh' => [7.9],
+        ];
+    }
+
+    /**
+     * PECL builds libmemcached without HAVE_HSIEH_HASH, so the hashkit
+     * setter rejects HASH_HSIEH with INVALID_ARGUMENT. PHP-side coercion
+     * runs first, so a float like 7.9 or the string "7" also lands on
+     * HSIEH after {@code zval_get_long()} and must be rejected.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('libketamaHashRejectedValues')]
+    public function testLibketamaHashSetterRejectsHsiehInAllPeclCoercions(mixed $value): void
+    {
+        $client = new MemcachedClient();
+
+        self::assertFalse($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, $value));
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+    }
+
+    /**
+     * Behavioural anchor for the "no-op setter" claim: a real
+     * three-server ring keeps the same key→shard mapping across a series
+     * of OPT_LIBKETAMA_HASH writes (including non-int coerced ones).
+     * Without this, a future refactor could silently make
+     * OPT_LIBKETAMA_HASH change the selector hash — diverging from PECL
+     * even though every other surface check still passes.
+     */
+    public function testLibketamaHashSetterIsNoopForRoutingDecisions(): void
+    {
+        $client = new MemcachedClient();
+        $client->addServer('cache-a', 11211);
+        $client->addServer('cache-b', 11211);
+        $client->addServer('cache-c', 11211);
+        self::assertTrue($client->setOption(MemcachedClient::OPT_DISTRIBUTION, MemcachedClient::DISTRIBUTION_CONSISTENT));
+
+        $keys = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta'];
+        $baseline = $this->resolveServerHosts($client, $keys);
+
+        // Even a "valid-looking" int that would otherwise mean MURMUR
+        // must leave routing alone (the dial is purely PECL-cosmetic).
+        self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, MemcachedClient::HASH_MURMUR));
+        self::assertSame($baseline, $this->resolveServerHosts($client, $keys));
+
+        // A coerced non-int (PHP-string) must also stay no-op.
+        self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, 'not-an-int'));
+        self::assertSame($baseline, $this->resolveServerHosts($client, $keys));
+
+        // OPT_HASH still works as the actual routing dial; flipping it
+        // must move at least one key — proving the test would catch a
+        // regression where OPT_LIBKETAMA_HASH wired itself into routing.
+        self::assertTrue($client->setOption(MemcachedClient::OPT_HASH, MemcachedClient::HASH_MURMUR));
+        self::assertNotSame($baseline, $this->resolveServerHosts($client, $keys));
+    }
+
+    /**
+     * @param list<string> $keys
+     *
+     * @return array<string, string>
+     */
+    private function resolveServerHosts(MemcachedClient $client, array $keys): array
+    {
+        $map = [];
+        foreach ($keys as $key) {
+            $pick = $client->getServerByKey($key);
+            self::assertIsArray($pick);
+            $map[$key] = $pick['host'];
+        }
+
+        return $map;
     }
 
     public function testLocallyImplementedBooleanOptionsAreStored(): void
