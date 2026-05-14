@@ -5,6 +5,17 @@ declare(strict_types=1);
 namespace PureCache;
 
 /**
+ * {@see MemcachedConstants::HAVE_ENCODING} is a class constant (to match
+ * PECL's reflection-visible shape) but its value must reflect whether the
+ * PureCache build can actually encrypt values, which depends on
+ * {@code ext-openssl} being loaded. PHP only allows class constants to be
+ * initialized from constant expressions, so we materialize the runtime
+ * answer into a global {@code define()} *before* the class body so the
+ * constant resolves to the same bool every time it is read.
+ */
+\defined('PureCache\\HAVE_ENCODING') || \define('PureCache\\HAVE_ENCODING', \extension_loaded('openssl'));
+
+/**
  * Base class holding constants only (same shape as PECL). Do not instantiate; use {@see MemcachedClient}.
  */
 abstract class MemcachedConstants
@@ -324,7 +335,17 @@ abstract class MemcachedConstants
 
     public const bool HAVE_ZSTD = true;
 
-    public const bool HAVE_ENCODING = false;
+    /**
+     * Tracks whether this PureCache build can encrypt/decrypt cache values.
+     * Mirrors PECL's compile-time {@code HAVE_ENCODING} (set when
+     * libmemcached was built with AES support), but at the PHP layer the
+     * binary dial is {@see \extension_loaded()} for {@code ext-openssl} —
+     * which both {@see ENCODING_MODE_LIBMEMCACHED} (AES-128-ECB) and
+     * {@see ENCODING_MODE_AEAD} (AES-256-GCM) depend on. Materialized via
+     * a top-of-file {@code define()} so the constant remains a const while
+     * still answering truthfully on a host that ships PHP without openssl.
+     */
+    public const bool HAVE_ENCODING = \PureCache\HAVE_ENCODING;
 
     public const bool HAVE_SESSION = true;
 
@@ -348,6 +369,39 @@ abstract class MemcachedConstants
      * trusted.
      */
     public const int OPT_ALLOW_SERIALIZED_CLASSES = -1009;
+
+    /**
+     * PureCache extension (no PECL counterpart): selects the algorithm used
+     * by {@see CacheClient::setEncodingKey()} to transparently encrypt
+     * cached values.
+     *
+     *  - {@see ENCODING_MODE_LIBMEMCACHED} (default) — bit-compatible with
+     *    libmemcached's {@code memcached_set_encoding_key}: AES-128-ECB with
+     *    zero padding, key = {@code md5(raw)} of the user key. No flag is
+     *    set on stored entries, encryption is silent and the caller is
+     *    responsible for ensuring all clients on the same pool use the same
+     *    key. Suitable only for compatibility with existing
+     *    libmemcached-encrypted caches — the algorithm has no integrity
+     *    check and leaks repeating 16-byte plaintext blocks.
+     *  - {@see ENCODING_MODE_AEAD} — modern AEAD: AES-256-GCM with a
+     *    per-value random 12-byte nonce, 16-byte tag and a marker bit on
+     *    {@code flags} so old, unencrypted entries are passed through
+     *    untouched. Requires {@code ext-openssl}.
+     */
+    public const int OPT_ENCODING_MODE = -1010;
+
+    /**
+     * Bit-compatible with libmemcached: AES-128-ECB, MD5-derived key,
+     * zero-padded output, no flag bit on stored entries.
+     */
+    public const int ENCODING_MODE_LIBMEMCACHED = 0;
+
+    /**
+     * PureCache extension: AES-256-GCM with random nonce, authentication
+     * tag and a marker bit on {@code flags}. Not wire-compatible with
+     * libmemcached.
+     */
+    public const int ENCODING_MODE_AEAD = 1;
 
     public const int LIBMEMCACHED_VERSION_HEX = 0x0100010F;
 }

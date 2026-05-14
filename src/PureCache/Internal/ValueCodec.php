@@ -41,6 +41,15 @@ final class ValueCodec
 
     public const COMPRESSION_ZSTD = 1 << 7;
 
+    /**
+     * Marker bit set on entries produced under
+     * {@see \PureCache\MemcachedConstants::ENCODING_MODE_AEAD}. Sits inside
+     * {@see MASK_INTERNAL} (bits 4-15) so it round-trips through every
+     * backend's flag column. Libmemcached-compat encryption is deliberately
+     * markerless — the bit only appears for the modern AEAD format.
+     */
+    public const ENCRYPTED_AEAD = 1 << 8;
+
     public static function setType(int &$flags, int $type): void
     {
         $flags = ($flags & ~self::MASK_TYPE) | ($type & self::MASK_TYPE);
@@ -64,6 +73,11 @@ final class ValueCodec
     public static function hasCompression(int $flags): bool
     {
         return ($flags & self::COMPRESSED) !== 0;
+    }
+
+    public static function hasAeadEncryption(int $flags): bool
+    {
+        return ($flags & self::ENCRYPTED_AEAD) !== 0;
     }
 
     public static function compressionKind(int $flags): int
@@ -103,6 +117,7 @@ final class ValueCodec
         int $compressionThreshold,
         float $compressionFactor,
         int $userFlags,
+        ?EncodingContext $encoding = null,
     ): array {
         $flags = 0;
         if ($userFlags >= 0) {
@@ -123,23 +138,62 @@ final class ValueCodec
             }
         }
 
+        if (null !== $encoding) {
+            $payload = PayloadEncryption::encrypt($payload, $encoding);
+            if (MemcachedConstants::ENCODING_MODE_AEAD === $encoding->mode) {
+                $flags |= self::ENCRYPTED_AEAD;
+            }
+        }
+
         return [$payload, $flags];
     }
 
     /**
-     * @param bool $allowSerializedClasses if {@code true}, PHP-serialized objects
-     *                                     are restored to their original classes,
-     *                                     matching PECL's default behavior. The
-     *                                     {@code false} default rejects objects
-     *                                     via {@code allowed_classes => false},
-     *                                     so untrusted cache values can't be
-     *                                     turned into POPs. Callers that need
-     *                                     full PECL parity must opt-in (see
-     *                                     {@code OPT_ALLOW_SERIALIZED_CLASSES}
-     *                                     in {@see ClientOptions}).
+     * @param bool             $allowSerializedClasses if {@code true},
+     *                                                 PHP-serialized objects
+     *                                                 are restored to their
+     *                                                 original classes, matching
+     *                                                 PECL's default behavior.
+     *                                                 The {@code false} default
+     *                                                 rejects objects via
+     *                                                 {@code allowed_classes
+     *                                                 => false}, so untrusted
+     *                                                 cache values can't be
+     *                                                 turned into POPs. Callers
+     *                                                 that need full PECL
+     *                                                 parity must opt-in
+     *                                                 (see
+     *                                                 {@code OPT_ALLOW_SERIALIZED_CLASSES}
+     *                                                 in {@see ClientOptions}).
+     * @param ?EncodingContext $encoding               key+mode set by
+     *                                                 {@see \PureCache\AbstractCacheClient::setEncodingKey()}.
+     *                                                 {@code null} leaves the
+     *                                                 payload as-is unless the
+     *                                                 {@see ENCRYPTED_AEAD}
+     *                                                 flag is set, in which
+     *                                                 case decoding fails
+     *                                                 loudly so missing-key
+     *                                                 misconfigurations don't
+     *                                                 silently return garbage.
      */
-    public static function decode(string $payload, int $flags, int $serializer, bool $allowSerializedClasses = false): mixed
-    {
+    public static function decode(
+        string $payload,
+        int $flags,
+        int $serializer,
+        bool $allowSerializedClasses = false,
+        ?EncodingContext $encoding = null,
+    ): mixed {
+        if (self::hasAeadEncryption($flags)) {
+            if (null === $encoding || MemcachedConstants::ENCODING_MODE_AEAD !== $encoding->mode) {
+                throw new \RuntimeException('encrypted payload (AEAD) but no matching encoding key configured');
+            }
+
+            $payload = PayloadEncryption::decrypt($payload, $encoding);
+            $flags &= ~self::ENCRYPTED_AEAD;
+        } elseif (null !== $encoding && MemcachedConstants::ENCODING_MODE_LIBMEMCACHED === $encoding->mode) {
+            $payload = PayloadEncryption::decrypt($payload, $encoding);
+        }
+
         if (self::hasCompression($flags)) {
             if (\strlen($payload) < 4) {
                 throw new \RuntimeException('Invalid compressed payload');
