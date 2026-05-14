@@ -133,8 +133,16 @@ final class RedisItemScripts
      * STATUS_NOT_STORED is returned). Decrement clamps at 0 to match memcached
      * semantics.
      *
+     * Optional autovivify: when {@code ARGV[3]} ("initial") is non-empty the
+     * script seeds a missing key with that integer (and the supplied
+     * {@code ARGV[5]} F-token + {@code ARGV[4]} TTL) instead of returning
+     * NOT_FOUND, mirroring PECL's {@code memcached_increment_with_initial}.
+     *
      * ARGV[1] = positive offset (decimal string)
      * ARGV[2] = mode ('I' increment, 'D' decrement)
+     * ARGV[3] = initial value (decimal string; empty disables autovivify)
+     * ARGV[4] = ttl on autovivify (decimal seconds; 0/empty = no expiry)
+     * ARGV[5] = TYPE_LONG f-token (decimal string; only used on autovivify)
      *
      * Reply: {status, newValue, newCas} — newValue is the decimal string
      * representation of the post-mutation integer.
@@ -142,7 +150,16 @@ final class RedisItemScripts
     public const string LUA_ARITH = <<<'LUA'
         local f = redis.call('HGET', KEYS[1], 'f')
         local c = redis.call('HGET', KEYS[1], 'c')
-        if f == false or c == false then return {-1, '', ''} end
+        if f == false or c == false then
+          local init = ARGV[3]
+          if init == nil or init == '' then return {-1, '', ''} end
+          local typedF = ARGV[5]
+          if typedF == nil or typedF == '' then typedF = '1' end
+          redis.call('HSET', KEYS[1], 'd', init, 'f', typedF, 'c', '1')
+          local ttl = tonumber(ARGV[4])
+          if ttl and ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
+          return {1, init, '1'}
+        end
         local fn = tonumber(f)
         if fn == nil then return {-2, '', ''} end
         if fn % 16 ~= 1 then return {-2, '', ''} end

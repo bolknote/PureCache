@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace PureCache\Redis;
 
 use PureCache\AbstractCacheClient;
-use PureCache\Internal\ClientCoreState;
+use PureCache\Internal\CacheEntry;
+use PureCache\Internal\Expiration;
 use PureCache\Internal\KeyFormatter;
+use PureCache\Internal\PersistentStateRegistry;
+use PureCache\Internal\StoreMode;
 use PureCache\Internal\ValueCodec;
-use PureCache\MemcachedConstants;
 use PureCache\Redis\Internal\RedisInfoReplyFlatten;
 
 /**
@@ -23,36 +25,36 @@ use PureCache\Redis\Internal\RedisInfoReplyFlatten;
  */
 final class RedisClient extends AbstractCacheClient
 {
-    public const string ITEM_KEY_PREFIX = 'pm:v1:';
+    /** @use PersistentStateRegistry<RedisClientState> */
+    use PersistentStateRegistry;
 
-    /** @var array<string, RedisClientState> */
-    private static array $persistentPool = [];
+    public const string ITEM_KEY_PREFIX = 'pm:v1:';
 
     /** @var list<array{serverIndex:int, fn:callable(NativeRedisClient):void}> */
     private array $writeBuffer = [];
 
     #[\Override]
-    protected function createState(?string $persistentId): ClientCoreState
+    protected function createState(?string $persistentId): RedisClientState
     {
         return RedisClientState::createFresh($persistentId);
-    }
-
-    #[\Override]
-    protected function lookupPersistentState(string $persistentId): ?ClientCoreState
-    {
-        return self::$persistentPool[$persistentId] ?? null;
-    }
-
-    #[\Override]
-    protected function registerPersistentState(string $persistentId, ClientCoreState $state): void
-    {
-        self::$persistentPool[$persistentId] = $state;
     }
 
     #[\Override]
     protected function defaultPort(): int
     {
         return 6379;
+    }
+
+    /**
+     * Redis keys are bounded by the 512 MB string size cap, but anything beyond
+     * a few kilobytes hurts the {@code HGETALL}/{@code SCAN} ergonomics that
+     * back the PureCache wire format, so we keep the practical ceiling small
+     * enough to fit comfortably in a single RESP frame.
+     */
+    #[\Override]
+    public function maxKeyLength(): int
+    {
+        return 65_536;
     }
 
     #[\Override]
@@ -91,14 +93,9 @@ final class RedisClient extends AbstractCacheClient
     #[\Override]
     protected function doGet(string $key, string $prefixedKey, ?string $serverKey, int $getFlags): mixed
     {
-        $st = $this->st();
-        $idx = null !== $serverKey
-            ? $st->selector->pickServerIndex($serverKey)
-            : $st->selector->pickServerIndex($this->routingKey($key));
-
-        try {
-            $entry = $this->readEntry($prefixedKey, $idx);
-            if (null === $entry) {
+        return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($getFlags): mixed {
+            $entry = $this->readEntry($pk, $idx);
+            if (!$entry instanceof CacheEntry) {
                 $this->setResult(self::RES_NOTFOUND);
 
                 return false;
@@ -107,12 +104,7 @@ final class RedisClient extends AbstractCacheClient
             $this->setResult(self::RES_SUCCESS);
 
             return $this->valueForGetFlags($entry, $getFlags);
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
-
-            return false;
-        }
+        });
     }
 
     /**
@@ -127,7 +119,7 @@ final class RedisClient extends AbstractCacheClient
             $found = [];
             $byServer = $this->groupKeysByServer($keys, $serverKey);
             foreach ($byServer as $idx => $pairs) {
-                $entries = $this->readEntriesPipelined(array_map(static fn (array $p) => $p[1], $pairs), $idx);
+                $entries = $this->readEntriesPipelined(array_map(static fn (array $p): string => $p[1], $pairs), $idx);
                 foreach ($pairs as $i => [$orig]) {
                     $entry = $entries[$i] ?? null;
                     if (null !== $entry) {
@@ -147,16 +139,16 @@ final class RedisClient extends AbstractCacheClient
     /**
      * @param list<string> $keys
      *
-     * @return list<array<string, mixed>>|null
+     * @return list<array<string, mixed>>|false
      */
     #[\Override]
-    protected function doFetchBatch(array $keys, ?string $serverKey, bool $withCas): ?array
+    protected function doFetchBatch(array $keys, ?string $serverKey, bool $withCas): array|false
     {
         try {
             $results = [];
             $byServer = $this->groupKeysByServer($keys, $serverKey);
             foreach ($byServer as $idx => $pairs) {
-                $entries = $this->readEntriesPipelined(array_map(static fn (array $p) => $p[1], $pairs), $idx);
+                $entries = $this->readEntriesPipelined(array_map(static fn (array $p): string => $p[1], $pairs), $idx);
                 foreach ($pairs as $i => [$orig]) {
                     $entry = $entries[$i] ?? null;
                     if (null === $entry) {
@@ -171,7 +163,7 @@ final class RedisClient extends AbstractCacheClient
         } catch (\Throwable $throwable) {
             $this->setResult(self::RES_FAILURE, $throwable->getMessage());
 
-            return null;
+            return false;
         }
     }
 
@@ -186,20 +178,14 @@ final class RedisClient extends AbstractCacheClient
         try {
             $byServer = $this->groupKeysByServer($keys, $serverKey);
             foreach ($byServer as $idx => $pairs) {
-                $entries = $this->readEntriesPipelined(array_map(static fn (array $p) => $p[1], $pairs), $idx);
+                $entries = $this->readEntriesPipelined(array_map(static fn (array $p): string => $p[1], $pairs), $idx);
                 foreach ($pairs as $i => [$orig]) {
                     $entry = $entries[$i] ?? null;
                     if (null === $entry) {
                         continue;
                     }
 
-                    $cb = ['key' => $orig, 'value' => $this->valueFromEntry($entry)];
-                    if ($withCas) {
-                        $cb['cas'] = $this->casValue($entry['c']);
-                        $cb['flags'] = ValueCodec::getUserFlags($entry['f']);
-                    }
-
-                    $valueCb($this, $cb);
+                    $valueCb($this, $this->delayedEntry($orig, $entry, $withCas));
                 }
             }
         } catch (\Throwable $throwable) {
@@ -218,10 +204,10 @@ final class RedisClient extends AbstractCacheClient
     // -----------------------------------------------------------------------
 
     #[\Override]
-    protected function doStore(string $key, mixed $value, int $expiration, string $mode, ?string $serverKey, ?string $casToken): bool
+    protected function doStore(string $key, mixed $value, int $expiration, StoreMode $mode, ?string $serverKey, ?string $casToken): bool
     {
         $this->pristine = false;
-        if (('A' === $mode || 'P' === $mode) && $this->optionBool(self::OPT_COMPRESSION, true)) {
+        if ($mode->isConcatenation() && $this->optionBool(self::OPT_COMPRESSION, true)) {
             trigger_error('cannot append/prepend with compression turned on', \E_USER_WARNING);
             $this->setResult(self::RES_NOTSTORED);
 
@@ -245,7 +231,7 @@ final class RedisClient extends AbstractCacheClient
             return false;
         }
 
-        if ('A' === $mode || 'P' === $mode) {
+        if ($mode->isConcatenation()) {
             return $this->storeAppendOrPrepend($pk, $value, $mode, $serverKey, $key);
         }
 
@@ -274,7 +260,7 @@ final class RedisClient extends AbstractCacheClient
             return false;
         }
 
-        $idx = $this->pickIndex($serverKey, $key);
+        $idx = $this->pickServerIndex($serverKey, $key);
 
         if (!$this->shouldBufferNoReplyWrite()) {
             $this->flushWriteBuffer();
@@ -284,8 +270,8 @@ final class RedisClient extends AbstractCacheClient
         $ttl = $this->ttlSeconds($expiration);
 
         $fn = match ($mode) {
-            'E' => $this->makeAddClosure($rk, $payload, $flags, $ttl),
-            'R' => $this->makeReplaceClosure($rk, $payload, $flags, $ttl),
+            StoreMode::Add => $this->makeAddClosure($rk, $payload, $flags, $ttl),
+            StoreMode::Replace => $this->makeReplaceClosure($rk, $payload, $flags, $ttl),
             default => $this->makeCasSetClosure($rk, $payload, $flags, $ttl, $casToken ?? ''),
         };
 
@@ -300,6 +286,13 @@ final class RedisClient extends AbstractCacheClient
     }
 
     /**
+     * Pipelined {@code setMulti} via EVALSHA(LUA_CAS_SET) per-server: one TCP
+     * write that batches all keys for the same Redis backend, then a single
+     * receive loop drains the replies. Falls back to the single-shot
+     * {@code doStore} path for any item whose value fails encoding (bad
+     * compression input, oversized payload, etc.) so PECL's RES_SOME_ERRORS
+     * semantics remain intact.
+     *
      * @param array<mixed> $items
      */
     #[\Override]
@@ -313,9 +306,79 @@ final class RedisClient extends AbstractCacheClient
         }
 
         $ok = true;
+        $st = $this->st();
+
+        /** @var array<int, list<array{cmd: list<string>, key: string}>> $byServer */
+        $byServer = [];
         foreach ($items as $key => $value) {
             $keyString = (string) $key;
-            if (!$this->doStore($keyString, $value, $expiration, 'S', $serverKey, null)) {
+            $pk = $this->prefixedKey($keyString);
+            if (!$this->checkKeyInternal($pk)) {
+                $this->setResult(self::RES_BAD_KEY_PROVIDED);
+                $ok = false;
+                continue;
+            }
+
+            try {
+                [$payload, $flags] = ValueCodec::encode(
+                    $value,
+                    $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
+                    $this->optionBool(self::OPT_COMPRESSION, true),
+                    $this->optionInt(self::OPT_COMPRESSION_TYPE, self::COMPRESSION_TYPE_FASTLZ),
+                    $this->optionInt(self::OPT_COMPRESSION_LEVEL, 3),
+                    $st->compressionThreshold,
+                    $st->compressionFactor,
+                    $this->optionInt(self::OPT_USER_FLAGS, -1),
+                );
+            } catch (\Throwable) {
+                $this->setResult(self::RES_PAYLOAD_FAILURE);
+                $ok = false;
+                continue;
+            }
+
+            $limit = $this->optionInt(self::OPT_ITEM_SIZE_LIMIT, 0);
+            if ($limit > 0 && \strlen($payload) > $limit) {
+                $this->setResult(self::RES_E2BIG);
+                $ok = false;
+                continue;
+            }
+
+            $idx = $this->pickServerIndex($serverKey, $keyString);
+            $rk = $this->itemRedisKey($pk);
+            $ttl = $this->ttlSeconds($expiration);
+
+            $cmd = ['EVALSHA', sha1(RedisItemScripts::LUA_CAS_SET), '1', $rk, $payload, (string) $flags, (string) ($ttl ?? 0), ''];
+            $byServer[$idx][] = ['cmd' => $cmd, 'key' => $keyString];
+        }
+
+        foreach ($byServer as $idx => $batch) {
+            try {
+                $redis = $this->redisForServerIndex($idx);
+                $commands = array_map(static fn (array $b): array => $b['cmd'], $batch);
+                $replies = $this->pipelineWithScriptFallback($redis, $commands, RedisItemScripts::LUA_CAS_SET);
+
+                foreach ($replies as $reply) {
+                    if ($reply instanceof \Throwable) {
+                        $this->setResult(self::RES_FAILURE, $reply->getMessage());
+                        $ok = false;
+                        continue;
+                    }
+
+                    try {
+                        [$status] = RedisItemScripts::decodePairReply($reply);
+                    } catch (\Throwable $throwable) {
+                        $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+                        $ok = false;
+                        continue;
+                    }
+
+                    if (RedisItemScripts::STATUS_OK !== $status) {
+                        $ok = false;
+                    }
+                }
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($idx, $throwable);
+                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
                 $ok = false;
             }
         }
@@ -325,33 +388,48 @@ final class RedisClient extends AbstractCacheClient
         return $ok;
     }
 
+    /**
+     * Wraps {@see NativeRedisClient::pipeline()} so a NOSCRIPT failure on the
+     * first reply triggers a one-shot {@code SCRIPT LOAD} + retry of the whole
+     * batch — same lazy-cache strategy as {@see NativeRedisClient::evalScript()}
+     * but pipeline-aware.
+     *
+     * @param list<list<string>> $commands
+     *
+     * @return list<mixed>
+     */
+    private function pipelineWithScriptFallback(NativeRedisClient $redis, array $commands, string $script): array
+    {
+        if ([] === $commands) {
+            return [];
+        }
+
+        $replies = $redis->pipeline($commands);
+        $needsLoad = false;
+        foreach ($replies as $reply) {
+            if ($reply instanceof RedisCommandException && str_starts_with($reply->getMessage(), 'NOSCRIPT')) {
+                $needsLoad = true;
+                break;
+            }
+        }
+
+        if (!$needsLoad) {
+            return $replies;
+        }
+
+        $redis->executeRaw(['SCRIPT', 'LOAD', $script]);
+
+        return $redis->pipeline($commands);
+    }
+
     #[\Override]
     protected function doTouch(string $key, int $expiration, ?string $serverKey): bool
     {
-        $this->pristine = false;
         if (!$this->shouldBufferNoReplyWrite()) {
             $this->flushWriteBuffer();
         }
 
-        $pk = $this->prefixedKey($key);
-        if (!$this->checkKeyInternal($pk)) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
-
-            return false;
-        }
-
-        if (null !== $serverKey && !$this->checkKeyInternal($serverKey)) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
-
-            return false;
-        }
-
-        if (!$this->ensureServersAvailable()) {
-            return false;
-        }
-
-        $idx = $this->pickIndex($serverKey, $key);
-        try {
+        return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($expiration): bool {
             $ttl = $this->ttlSeconds($expiration);
             $rk = $this->itemRedisKey($pk);
             $fn = static function (NativeRedisClient $r) use ($rk, $ttl): void {
@@ -372,43 +450,30 @@ final class RedisClient extends AbstractCacheClient
 
             try {
                 $fn($this->redisForServerIndex($idx));
-            } catch (RedisClientStoreException $exception) {
-                if (RedisItemScripts::STATUS_NOT_FOUND === $exception->outcome) {
+            } catch (RedisClientStoreException $redisClientStoreException) {
+                if (RedisItemScripts::STATUS_NOT_FOUND === $redisClientStoreException->outcome) {
                     $this->setResult(self::RES_NOTFOUND);
 
                     return false;
                 }
 
-                throw $exception;
+                throw $redisClientStoreException;
             }
 
             $this->setResult(self::RES_SUCCESS);
 
             return true;
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
-
-            return false;
-        }
+        });
     }
 
     #[\Override]
     protected function doDelete(string $key, ?string $serverKey, int $time): bool
     {
+        // Match the Memcached backend's validation order: bad key wins over
+        // delete-time, which in turn wins over an empty server pool.
         $this->pristine = false;
-        if (!$this->shouldBufferNoReplyWrite()) {
-            $this->flushWriteBuffer();
-        }
-
         $pk = $this->prefixedKey($key);
-        if (!$this->checkKeyInternal($pk)) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
-
-            return false;
-        }
-
-        if (null !== $serverKey && !$this->checkKeyInternal($serverKey)) {
+        if (!$this->checkKeyInternal($pk) || (null !== $serverKey && !$this->checkKeyInternal($serverKey))) {
             $this->setResult(self::RES_BAD_KEY_PROVIDED);
 
             return false;
@@ -422,7 +487,11 @@ final class RedisClient extends AbstractCacheClient
             return false;
         }
 
-        $idx = $this->pickIndex($serverKey, $key);
+        if (!$this->shouldBufferNoReplyWrite()) {
+            $this->flushWriteBuffer();
+        }
+
+        $idx = $this->pickServerIndex($serverKey, $key);
         try {
             $rk = $this->itemRedisKey($pk);
             $fn = static function (NativeRedisClient $r) use ($rk): void {
@@ -460,7 +529,7 @@ final class RedisClient extends AbstractCacheClient
     }
 
     #[\Override]
-    protected function doArith(string $key, int $offset, bool $decrement, ?string $serverKey, int $initialValue, int $expiry): int|false
+    protected function doArith(string $key, int $offset, bool $decrement, ?string $serverKey, int $initialValue, int $expiry, bool $autoCreate = false): int|false
     {
         if ($offset < 0) {
             trigger_error('offset cannot be a negative value', \E_USER_WARNING);
@@ -469,34 +538,18 @@ final class RedisClient extends AbstractCacheClient
             return false;
         }
 
-        $this->pristine = false;
         $this->flushWriteBuffer();
 
-        $pk = $this->prefixedKey($key);
-        if (!$this->checkKeyInternal($pk)) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
+        return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($offset, $decrement, $initialValue, $expiry, $autoCreate): int|false {
+            $rk = $this->itemRedisKey($pk);
+            $initialArg = $autoCreate ? (string) $initialValue : '';
+            $ttlArg = $autoCreate ? (string) ($this->ttlSeconds($expiry) ?? 0) : '0';
+            $typeLongFlag = (string) ValueCodec::TYPE_LONG;
 
-            return false;
-        }
-
-        if (null !== $serverKey && !$this->checkKeyInternal($serverKey)) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
-
-            return false;
-        }
-
-        if (!$this->ensureServersAvailable()) {
-            return false;
-        }
-
-        $idx = $this->pickIndex($serverKey, $key);
-        $rk = $this->itemRedisKey($pk);
-
-        try {
             $reply = $this->redisForServerIndex($idx)->evalScript(
                 RedisItemScripts::LUA_ARITH,
                 [$rk],
-                [(string) $offset, $decrement ? 'D' : 'I'],
+                [(string) $offset, $decrement ? 'D' : 'I', $initialArg, $ttlArg, $typeLongFlag],
             );
             [$status, $newValue] = RedisItemScripts::decodeArithReply($reply);
             if (RedisItemScripts::STATUS_OK === $status) {
@@ -514,12 +567,7 @@ final class RedisClient extends AbstractCacheClient
             $this->setResult(self::RES_NOTSTORED);
 
             return false;
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
-
-            return false;
-        }
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -694,40 +742,12 @@ final class RedisClient extends AbstractCacheClient
     // Redis-specific internals
     // -----------------------------------------------------------------------
 
-    /**
-     * @param list<string> $keys
-     *
-     * @return array<int, list<array{0:string,1:string}>>
-     */
-    private function groupKeysByServer(array $keys, ?string $serverKey): array
-    {
-        $st = $this->st();
-        $by = [];
-        if (null === $serverKey) {
-            foreach ($keys as $ks) {
-                $pk = $this->prefixedKey($ks);
-                $idx = $st->selector->pickServerIndex($this->routingKey($ks));
-                $by[$idx][] = [$ks, $pk];
-            }
-        } else {
-            $idx = $st->selector->pickServerIndex($serverKey);
-            foreach ($keys as $ks) {
-                $by[$idx][] = [$ks, $this->prefixedKey($ks)];
-            }
-        }
-
-        return $by;
-    }
-
-    /**
-     * @return array{d:string,f:int,c:string}|null
-     */
-    private function readEntry(string $pk, int $serverIndex): ?array
+    private function readEntry(string $pk, int $serverIndex): ?CacheEntry
     {
         $rk = $this->itemRedisKey($pk);
         $h = $this->redisForServerIndex($serverIndex)->hgetall($rk);
 
-        return $this->normalizeEntry($h);
+        return $this->cacheEntryFromHash($h);
     }
 
     /**
@@ -735,7 +755,7 @@ final class RedisClient extends AbstractCacheClient
      *
      * @param list<string> $prefixedKeys
      *
-     * @return list<array{d:string,f:int,c:string}|null>
+     * @return list<CacheEntry|null>
      */
     private function readEntriesPipelined(array $prefixedKeys, int $serverIndex): array
     {
@@ -756,7 +776,7 @@ final class RedisClient extends AbstractCacheClient
                 throw $reply;
             }
 
-            $out[] = $this->normalizeEntry($this->kvArrayToMap(\is_array($reply) ? $reply : []));
+            $out[] = $this->cacheEntryFromHash($this->kvArrayToMap(\is_array($reply) ? $reply : []));
         }
 
         return $out;
@@ -785,20 +805,22 @@ final class RedisClient extends AbstractCacheClient
 
     /**
      * @param array<string, string> $h
-     *
-     * @return array{d:string,f:int,c:string}|null
      */
-    private function normalizeEntry(array $h): ?array
+    private function cacheEntryFromHash(array $h): ?CacheEntry
     {
-        if (!isset($h['d'], $h['f'], $h['c'])) {
+        if (!isset($h['d'], $h['f'], $h['c']) || !is_numeric($h['f'])) {
             return null;
         }
 
-        if (!is_numeric($h['f'])) {
-            return null;
-        }
+        $flagsInt = (int) $h['f'];
+        $value = ValueCodec::decode(
+            $h['d'],
+            $flagsInt,
+            $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
+            $this->optionBool(self::OPT_ALLOW_SERIALIZED_CLASSES, false),
+        );
 
-        return ['d' => $h['d'], 'f' => (int) $h['f'], 'c' => $h['c']];
+        return new CacheEntry($value, $this->casValue($h['c']), ValueCodec::getUserFlags($flagsInt));
     }
 
     private function itemRedisKey(string $pk): string
@@ -829,6 +851,9 @@ final class RedisClient extends AbstractCacheClient
             $server['host'],
             $server['port'],
             $this->redisReadWriteTimeout(),
+            $server['user'] ?? null,
+            $server['password'] ?? null,
+            $server['database'] ?? null,
         );
         $redis->connect();
         $st->redisByServerIndex[$serverIndex] = $redis;
@@ -886,63 +911,14 @@ final class RedisClient extends AbstractCacheClient
         $fn($this->redisForServerIndex($serverIndex));
     }
 
-    private function pickIndex(?string $serverKey, string $key): int
-    {
-        $st = $this->st();
-
-        return null !== $serverKey
-            ? $st->selector->pickServerIndex($serverKey)
-            : $st->selector->pickServerIndex($this->routingKey($key));
-    }
-
+    /**
+     * Honours memcached's "expiration > 30 days = absolute Unix timestamp"
+     * convention; otherwise applications passing {@code time() + 60} as a TTL
+     * would silently get an EXPIRE of "~57 years from now" on Redis.
+     */
     private function ttlSeconds(int $expiration): ?int
     {
-        if ($expiration <= 0) {
-            return null;
-        }
-
-        return $expiration;
-    }
-
-    /**
-     * @param array{d:string,f:int,c:string} $entry
-     */
-    private function valueFromEntry(array $entry): mixed
-    {
-        return ValueCodec::decode($entry['d'], $entry['f'], $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP));
-    }
-
-    /**
-     * @param array{d:string,f:int,c:string} $entry
-     */
-    private function valueForGetFlags(array $entry, int $getFlags): mixed
-    {
-        $value = $this->valueFromEntry($entry);
-        if (($getFlags & MemcachedConstants::GET_EXTENDED) !== 0) {
-            return [
-                'value' => $value,
-                'cas' => $this->casValue($entry['c']),
-                'flags' => ValueCodec::getUserFlags($entry['f']),
-            ];
-        }
-
-        return $value;
-    }
-
-    /**
-     * @param array{d:string,f:int,c:string} $entry
-     *
-     * @return array<string, mixed>
-     */
-    private function delayedEntry(string $key, array $entry, bool $withCas): array
-    {
-        $row = ['key' => $key, 'value' => $this->valueFromEntry($entry)];
-        if ($withCas) {
-            $row['cas'] = $this->casValue($entry['c']);
-            $row['flags'] = ValueCodec::getUserFlags($entry['f']);
-        }
-
-        return $row;
+        return Expiration::toRelativeSeconds($expiration);
     }
 
     /**
@@ -950,7 +926,7 @@ final class RedisClient extends AbstractCacheClient
      * upstream means the existing value is stored as a raw byte string, which
      * lets us perform the concatenation inside Lua and bump CAS atomically.
      */
-    private function storeAppendOrPrepend(string $pk, mixed $value, string $mode, ?string $serverKey, string $key): bool
+    private function storeAppendOrPrepend(string $pk, mixed $value, StoreMode $mode, ?string $serverKey, string $key): bool
     {
         if (!\is_string($value)) {
             $this->setResult(self::RES_NOTSTORED);
@@ -965,14 +941,15 @@ final class RedisClient extends AbstractCacheClient
             return false;
         }
 
-        $idx = $this->pickIndex($serverKey, $key);
+        $idx = $this->pickServerIndex($serverKey, $key);
         if (!$this->shouldBufferNoReplyWrite()) {
             $this->flushWriteBuffer();
         }
 
         $rk = $this->itemRedisKey($pk);
-        $fn = static function (NativeRedisClient $r) use ($rk, $value, $mode): void {
-            $reply = $r->evalScript(RedisItemScripts::LUA_APPEND_PREPEND, [$rk], [$value, $mode]);
+        $modeToken = $mode->value;
+        $fn = static function (NativeRedisClient $r) use ($rk, $value, $modeToken): void {
+            $reply = $r->evalScript(RedisItemScripts::LUA_APPEND_PREPEND, [$rk], [$value, $modeToken]);
             [$status] = RedisItemScripts::decodePairReply($reply);
             if (RedisItemScripts::STATUS_OK !== $status) {
                 throw new RedisClientStoreException(RedisItemScripts::STATUS_NOT_STORED);
@@ -1077,12 +1054,12 @@ final class RedisClient extends AbstractCacheClient
             $this->setResult(self::RES_SUCCESS);
 
             return true;
-        } catch (RedisClientStoreException $exception) {
-            return match ($exception->outcome) {
+        } catch (RedisClientStoreException $redisClientStoreException) {
+            return match ($redisClientStoreException->outcome) {
                 RedisItemScripts::STATUS_NOT_STORED => $this->failResult(self::RES_NOTSTORED),
                 RedisItemScripts::STATUS_NOT_FOUND => $this->failResult(self::RES_NOTFOUND),
                 RedisItemScripts::STATUS_DATA_EXISTS => $this->failResult(self::RES_DATA_EXISTS),
-                default => throw $exception,
+                default => throw $redisClientStoreException,
             };
         }
     }

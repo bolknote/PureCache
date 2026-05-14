@@ -71,6 +71,42 @@ final class RedisItemScriptsTest extends TestCase
         self::assertContains('HINCRBY', $this->extractRedisCalls(RedisItemScripts::LUA_ARITH));
     }
 
+    public function testArithScriptRefusesAutoCreateWhenNoInitialIsProvided(): void
+    {
+        // The script must distinguish "key absent + no initial" from "key
+        // absent + autovivify": the former returns the {-1, '', ''} miss
+        // sentinel that RedisClient maps to RES_NOTFOUND.
+        self::assertStringContainsString("if init == nil or init == '' then return {-1, '', ''} end", RedisItemScripts::LUA_ARITH);
+    }
+
+    public function testArithScriptSeedsTypedLongOnAutoCreate(): void
+    {
+        // On autovivify the new entry must be written with the typed-long
+        // f-token so subsequent reads decode it as an integer (PECL parity
+        // with increment_with_initial).
+        self::assertMatchesRegularExpression(
+            "/HSET.*?'d', init, 'f', typedF, 'c', '1'/",
+            RedisItemScripts::LUA_ARITH,
+        );
+    }
+
+    public function testArithScriptAppliesExpiryOnAutoCreate(): void
+    {
+        // When ARGV[4] > 0, the seeded key must receive that TTL.
+        self::assertMatchesRegularExpression(
+            "/local ttl = tonumber\\(ARGV\\[4\\]\\)\\s+if ttl and ttl > 0 then redis\\.call\\('EXPIRE'/",
+            RedisItemScripts::LUA_ARITH,
+        );
+    }
+
+    public function testArithScriptRefusesNonLongType(): void
+    {
+        // Existing keys with a non-TYPE_LONG flag (e.g. strings, serialized
+        // payloads) must not be incremented — mirrors PECL's NOTSTORED
+        // behavior for arith on non-numeric values.
+        self::assertStringContainsString('if fn % 16 ~= 1 then return {-2,', RedisItemScripts::LUA_ARITH);
+    }
+
     public function testAppendPrependScriptRefusesNonStringTypeViaCheck(): void
     {
         self::assertStringContainsString('fn % 16 ~= 0', RedisItemScripts::LUA_APPEND_PREPEND);

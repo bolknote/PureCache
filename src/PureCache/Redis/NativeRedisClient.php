@@ -9,6 +9,13 @@ namespace PureCache\Redis;
  */
 class NativeRedisClient implements RedisStatsBackend
 {
+    /**
+     * Defensive cap on a single RESP {@code *N} array length. Real Redis
+     * replies (HGETALL, MGET, SCAN) are bounded by configuration; we use this
+     * to refuse pathological/garbled replies before we recurse 100M times.
+     */
+    public const int MAX_ARRAY_REPLY_LENGTH = 1_048_576;
+
     /** @var resource|null */
     private $stream;
 
@@ -16,6 +23,10 @@ class NativeRedisClient implements RedisStatsBackend
         private readonly string $host,
         private readonly int $port,
         private readonly float $readWriteTimeout = 0.0,
+        private readonly ?string $authUser = null,
+        #[\SensitiveParameter]
+        private readonly ?string $authPassword = null,
+        private readonly ?int $database = null,
     ) {
     }
 
@@ -48,6 +59,46 @@ class NativeRedisClient implements RedisStatsBackend
         }
 
         $this->stream = $stream;
+
+        $this->performHandshake();
+    }
+
+    private function performHandshake(): void
+    {
+        if (null !== $this->authPassword && '' !== $this->authPassword) {
+            $argv = ['AUTH'];
+            if (null !== $this->authUser && '' !== $this->authUser) {
+                $argv[] = $this->authUser;
+            }
+
+            $argv[] = $this->authPassword;
+            $this->writeArgv($argv);
+            try {
+                $this->readReply();
+            } catch (RedisCommandException $redisCommandException) {
+                $this->forceClose();
+                throw new \RuntimeException('Redis AUTH rejected: '.$redisCommandException->getMessage(), 0, $redisCommandException);
+            }
+        }
+
+        if (null !== $this->database && 0 !== $this->database) {
+            $this->writeArgv(['SELECT', (string) $this->database]);
+            try {
+                $this->readReply();
+            } catch (RedisCommandException $redisCommandException) {
+                $this->forceClose();
+                throw new \RuntimeException('Redis SELECT '.$this->database.' rejected: '.$redisCommandException->getMessage(), 0, $redisCommandException);
+            }
+        }
+    }
+
+    private function forceClose(): void
+    {
+        if (\is_resource($this->stream)) {
+            @fclose($this->stream);
+        }
+
+        $this->stream = null;
     }
 
     public function disconnect(): void
@@ -112,14 +163,7 @@ class NativeRedisClient implements RedisStatsBackend
             }
         }
 
-        if (!\is_resource($this->stream)) {
-            throw new \RuntimeException('Redis not connected');
-        }
-
-        $written = @fwrite($this->stream, $buf);
-        if (false === $written || $written < \strlen($buf)) {
-            throw new \RuntimeException('Redis pipeline write failed');
-        }
+        $this->writeAllOrThrow($buf, 'Redis pipeline write failed');
 
         $replies = [];
         foreach ($commands as $_) {
@@ -313,18 +357,39 @@ class NativeRedisClient implements RedisStatsBackend
      */
     private function writeArgv(array $argv): void
     {
-        if (!\is_resource($this->stream)) {
-            throw new \RuntimeException('Redis not connected');
-        }
-
         $buf = '*'.\count($argv)."\r\n";
         foreach ($argv as $a) {
             $buf .= '$'.\strlen($a)."\r\n".$a."\r\n";
         }
 
-        $written = @fwrite($this->stream, $buf);
-        if (false === $written || $written < \strlen($buf)) {
-            throw new \RuntimeException('Redis write failed');
+        $this->writeAllOrThrow($buf, 'Redis write failed');
+    }
+
+    /**
+     * Loops until the whole {@code $buf} is written. Even on a blocking socket
+     * a single {@code fwrite()} call can return a short count (e.g. when the
+     * kernel send buffer is full), and that's not a "write failed" condition —
+     * just resume from the offset.
+     */
+    private function writeAllOrThrow(string $buf, string $errorMessage): void
+    {
+        if (!\is_resource($this->stream)) {
+            throw new \RuntimeException('Redis not connected');
+        }
+
+        $stream = $this->stream;
+        $offset = 0;
+        $total = \strlen($buf);
+
+        while ($offset < $total) {
+            $chunk = $offset > 0 ? substr($buf, $offset) : $buf;
+            $written = @fwrite($stream, $chunk);
+            if (false === $written || 0 === $written) {
+                $this->checkTimeout();
+                throw new \RuntimeException($errorMessage);
+            }
+
+            $offset += $written;
         }
     }
 
@@ -456,6 +521,10 @@ class NativeRedisClient implements RedisStatsBackend
         $count = (int) $countLine;
         if ($count < 0) {
             return [];
+        }
+
+        if ($count > self::MAX_ARRAY_REPLY_LENGTH) {
+            throw new \RuntimeException('RESP array reply exceeds safety limit ('.$count.' > '.self::MAX_ARRAY_REPLY_LENGTH.')');
         }
 
         $out = [];

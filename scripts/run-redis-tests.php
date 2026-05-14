@@ -29,24 +29,40 @@ if (function_exists('pcntl_signal')) {
     });
 }
 
-$binary = findRedisServerBinary();
-if (null === $binary) {
-    fwrite(\STDERR, "redis-server binary not found. Install Redis or set REDIS_BINARY.\n");
-    exit(127);
-}
+$externalHost = getenv('REDIS_TEST_HOST');
+$externalPrimaryPort = getenv('REDIS_TEST_PORT');
 
-try {
-    $primaryRedis = startRedisServer($binary, REDIS_BIND_HOST);
-    $redisInstances[] = $primaryRedis;
-    fwrite(\STDERR, 'Started redis-server (primary) on '.REDIS_BIND_HOST.':'.$primaryRedis['port']."\n");
+if (is_string($externalHost) && '' !== $externalHost && is_string($externalPrimaryPort) && '' !== $externalPrimaryPort) {
+    fwrite(\STDERR, 'Using external redis at '.$externalHost.':'.$externalPrimaryPort."\n");
+    $primaryRedis = ['process' => null, 'pipes' => [], 'port' => (int) $externalPrimaryPort, 'host' => $externalHost];
+    $externalSecondaryPort = getenv('REDIS_TEST_PORT_2');
+    if (is_string($externalSecondaryPort) && '' !== $externalSecondaryPort) {
+        $secondaryRedis = ['process' => null, 'pipes' => [], 'port' => (int) $externalSecondaryPort, 'host' => $externalHost];
+    } else {
+        $secondaryRedis = $primaryRedis;
+    }
+} else {
+    $binary = findRedisServerBinary();
+    if (null === $binary) {
+        fwrite(\STDERR, "redis-server binary not found. Install Redis or set REDIS_BINARY (or point REDIS_TEST_HOST + REDIS_TEST_PORT at an existing server).\n");
+        exit(127);
+    }
 
-    $secondaryRedis = startRedisServer($binary, REDIS_BIND_HOST);
-    $redisInstances[] = $secondaryRedis;
-    fwrite(\STDERR, 'Started redis-server (secondary) on '.REDIS_BIND_HOST.':'.$secondaryRedis['port']."\n");
-} catch (Throwable $throwable) {
-    fwrite(\STDERR, "Failed to start redis-server for integration tests: {$throwable->getMessage()}\n");
-    $cleanup();
-    exit(1);
+    try {
+        $primaryRedis = startRedisServer($binary, REDIS_BIND_HOST);
+        $primaryRedis['host'] = REDIS_BIND_HOST;
+        $redisInstances[] = $primaryRedis;
+        fwrite(\STDERR, 'Started redis-server (primary) on '.REDIS_BIND_HOST.':'.$primaryRedis['port']."\n");
+
+        $secondaryRedis = startRedisServer($binary, REDIS_BIND_HOST);
+        $secondaryRedis['host'] = REDIS_BIND_HOST;
+        $redisInstances[] = $secondaryRedis;
+        fwrite(\STDERR, 'Started redis-server (secondary) on '.REDIS_BIND_HOST.':'.$secondaryRedis['port']."\n");
+    } catch (Throwable $throwable) {
+        fwrite(\STDERR, "Failed to start redis-server for integration tests: {$throwable->getMessage()}\n");
+        $cleanup();
+        exit(1);
+    }
 }
 
 $phpunit = __DIR__.'/../vendor/bin/phpunit';
@@ -71,7 +87,7 @@ if (!is_array($env)) {
     $env = [];
 }
 
-$env['REDIS_TEST_HOST'] = REDIS_BIND_HOST;
+$env['REDIS_TEST_HOST'] = $primaryRedis['host'] ?? REDIS_BIND_HOST;
 $env['REDIS_TEST_PORT'] = (string) $primaryRedis['port'];
 $env['REDIS_TEST_PORT_2'] = (string) $secondaryRedis['port'];
 

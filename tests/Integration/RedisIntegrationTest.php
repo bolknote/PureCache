@@ -7,7 +7,7 @@ namespace PureCache\Tests\Integration;
 use PureCache\Memcached\MemcachedClient;
 use PureCache\Redis\RedisClient;
 
-final class RedisIntegrationTest extends AbstractMemcachedLikeIntegrationTest
+final class RedisIntegrationTest extends MemcachedLikeIntegrationTestCase
 {
     protected static function integrationHost(): string
     {
