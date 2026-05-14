@@ -157,7 +157,7 @@ Per-instance directives (read on every `new MemcachedClient()`):
 | `memcached.compression_level` | `3` | `OPT_COMPRESSION_LEVEL` | |
 | `memcached.compression_threshold` | `2000` | `ClientCoreState::$compressionThreshold` (not exposed via `setOption()` in PECL either) | Values smaller than the threshold are never compressed even when `OPT_COMPRESSION = true`. |
 | `memcached.compression_factor` | `1.3` | `ClientCoreState::$compressionFactor` (INI-only in PECL) | Compressed payload is only kept when `plain_len > compressed_len * factor`. |
-| `memcached.store_retry_count` | `0` | `OPT_STORE_RETRY_COUNT` | Stored on the client; the pure-PHP store path does not implement automatic fail-over yet. |
+| `memcached.store_retry_count` | `0` | `OPT_STORE_RETRY_COUNT` | On a primary `RES_FAILURE` (write threw, connection broke, …) the client retries the write onto another live server up to this many times. Applies to `set`/`add`/`replace`/`cas` across every backend; non-failure outcomes (`RES_NOTSTORED`, `RES_DATA_EXISTS`, `RES_E2BIG`, …) are surfaced verbatim — same as libmemcached. |
 | `memcached.item_size_limit` | `0` | `OPT_ITEM_SIZE_LIMIT` | Pre-network check that mirrors PECL's `RES_E2BIG`. |
 | `memcached.default_consistent_hash` | `Off` | `OPT_DISTRIBUTION = DISTRIBUTION_CONSISTENT` when On | Applied via the same code path PECL uses (`memcached_behavior_set(DISTRIBUTION_CONSISTENT)`). |
 | `memcached.default_binary_protocol` | `Off` | `OPT_BINARY_PROTOCOL` (write-through), warning emitted when On | Pure-PHP transport speaks the meta protocol only; the warning matches PECL's `failed to set memcached behavior` shape. |
@@ -174,10 +174,10 @@ Session directives (read by `PureCache\Memcached\Session\MemcachedSessionHandler
 | `memcached.sess_binary_protocol` | `On` | Recognised and validated, but the wire stays meta. One-shot `E_USER_WARNING` per process when On (matches PECL's "failed to set behavior" diagnostic). Old alias `memcached.sess_binary` is honored when the new key is unset. |
 | `memcached.sess_consistent_hash` | `On` | Toggles `OPT_DISTRIBUTION = DISTRIBUTION_CONSISTENT` + `OPT_LIBKETAMA_COMPATIBLE`. |
 | `memcached.sess_consistent_hash_type` | `ketama` | Accepts `ketama` or `ketama_weighted`; anything else warns and falls back to `ketama`. |
-| `memcached.sess_number_of_replicas` | `0` | Used for the write-retry formula even though the meta transport has no native replica support. |
-| `memcached.sess_randomize_replica_read` | `Off` | Set on the client for `getOption()` introspection; the meta transport does not honor it. |
-| `memcached.sess_remove_failed_servers` | `Off` | When On, `write()` retries `1 + replicas * (failure_limit + 1)` times — same formula PECL uses. |
-| `memcached.sess_server_failure_limit` | `0` | Feeds the write-retry formula above. |
+| `memcached.sess_number_of_replicas` | `0` | Forwarded to `OPT_NUMBER_OF_REPLICAS`; writes fan-out to the primary plus this many replicas, and the session-handler write loop uses the same value in its retry formula. |
+| `memcached.sess_randomize_replica_read` | `Off` | Forwarded to `OPT_RANDOMIZE_REPLICA_READ`; when combined with a non-zero replica count, session reads pick a random live replica per call. |
+| `memcached.sess_remove_failed_servers` | `Off` | Forwarded to `OPT_REMOVE_FAILED_SERVERS` (failed servers are routed around) and additionally enables the `1 + replicas * (failure_limit + 1)` retry loop inside `write()` — same formula PECL uses. |
+| `memcached.sess_server_failure_limit` | `0` | Forwarded to `OPT_SERVER_FAILURE_LIMIT` (caps consecutive failures before a server is taken out of rotation) and feeds the write-retry formula above. |
 | `memcached.sess_connect_timeout` | `0` ms | Applied via `OPT_CONNECT_TIMEOUT` when non-zero. |
 | `memcached.sess_sasl_username` / `memcached.sess_sasl_password` | empty | Setting either causes `open()` to fail with `failed to set memcached session sasl credentials` — same wording PECL emits when `memcached_set_sasl_auth_data` returns `MEMCACHED_FAILURE`. The pure-PHP transport has no binary handshake, so SASL credentials cannot be honored. |
 | `memcached.sess_persistent` | `Off` | When On, the underlying `MemcachedClient` is cached per `session.save_path` and reused on subsequent `open()` calls in the same process. |
@@ -231,7 +231,7 @@ If you want to supply your own backend (different host, custom `OPT_*` configura
 - `addServer()` endpoints are treated as independent shards, identically to the Redis backend. For a real Ignite cluster, register one endpoint and let the cluster handle partitioning.
 - `flush($delay > 0)` returns `RES_NOT_SUPPORTED` (`flush delay not supported on Ignite`); `flush(0)` clears the cache via `OP_CACHE_CLEAR`.
 - Per-key TTL on `set` / `setMulti` is silently ignored. The shared cache is opened with whatever expiry policy is configured server-side; if none is configured, entries live until they are explicitly overwritten or removed. `touch()` reduces to a key-existence check (returns `RES_SUCCESS` if the key is present, `RES_NOTFOUND` otherwise) and the new expiration value is not applied.
-- `setSaslAuthData()` / `setEncodingKey()` return `RES_NOT_SUPPORTED` here as in every other backend (the unsupported list under "Explicitly unsupported" applies).
+- `setSaslAuthData()` returns `RES_NOT_SUPPORTED` (no binary SASL handshake on the thin client). `setEncodingKey()` works the same as on every other backend — encryption happens client-side in the value codec before each `OP_CACHE_PUT` and after each `OP_CACHE_GET`, so the encoded payload is opaque to the server.
 
 ## Backend differences
 
@@ -257,7 +257,8 @@ places where backend semantics diverge in observable ways.
 | `getAllKeys` | `lru_crawler metadump all` on memcached ≥ 1.5.6, else `stats items` / `stats cachedump` | `SCAN MATCH pm:v1:*` with `COUNT 500` per server, stripped to logical keys | `cacheScanKeys` per server over the `PURECACHE_V1` cache |
 | `delete($key, $time > 0)` | `RES_NOT_SUPPORTED` (delayed delete not exposed in the meta protocol) | `RES_NOT_SUPPORTED` | `RES_NOT_SUPPORTED` |
 | Built-in authentication | none (`setSaslAuthData()` → `RES_NOT_SUPPORTED`) | URL-embedded `AUTH user pass` + optional `SELECT db` in the handshake | none |
-| `setSaslAuthData()` / `setEncodingKey()` | `RES_NOT_SUPPORTED` | `RES_NOT_SUPPORTED` | `RES_NOT_SUPPORTED` |
+| `setSaslAuthData()` | `RES_NOT_SUPPORTED` | `RES_NOT_SUPPORTED` (use the connection-string URL) | `RES_NOT_SUPPORTED` |
+| `setEncodingKey()` | client-side AES via `ValueCodec` (libmemcached-compat AES-128-ECB or AEAD AES-256-GCM) | identical — same codec runs before/after Lua | identical — same codec runs before/after the byte-array wrapper |
 | Persistent-connection pool (`persistent_id`) | isolated per backend via the shared `PersistentStateRegistry` trait — the same id on different backends does **not** collide |||
 | Serializer / compression / `OPT_USER_FLAGS` | identical (handled by `ValueCodec` before the wire) |||
 
@@ -333,7 +334,8 @@ The library is intentionally PECL-shaped, but it is not a libmemcached binding. 
 
 - Keying and routing: `OPT_PREFIX_KEY`, `OPT_HASH`, `OPT_LIBKETAMA_HASH` (PECL-quirk no-op setter that read-aliases `OPT_HASH` and only rejects `HASH_HSIEH`), `OPT_DISTRIBUTION`, `OPT_LIBKETAMA_COMPATIBLE`, `OPT_HASH_WITH_PREFIX_KEY`, `setBucket`.
 - Value encoding: `OPT_SERIALIZER`, `OPT_COMPRESSION`, `OPT_COMPRESSION_TYPE`, `OPT_COMPRESSION_LEVEL`, `OPT_USER_FLAGS`, `OPT_ITEM_SIZE_LIMIT`, `OPT_ALLOW_SERIALIZED_CLASSES`.
-- I/O behavior implemented by this client: `OPT_CONNECT_TIMEOUT`, `OPT_RECV_TIMEOUT`, `OPT_SEND_TIMEOUT`, `OPT_POLL_TIMEOUT`, `OPT_NOREPLY`, `OPT_BUFFER_WRITES`, `OPT_VERIFY_KEY`, `OPT_TCP_NODELAY`, `OPT_TCP_KEEPALIVE`, `OPT_SOCKET_SEND_SIZE`, `OPT_SOCKET_RECV_SIZE`, `OPT_IO_BYTES_WATERMARK`, `OPT_IO_MSG_WATERMARK`, `OPT_IO_KEY_PREFETCH`, `OPT_CORK` (Linux `TCP_CORK`; no-op elsewhere — matches libmemcached).
+- I/O behavior implemented by this client: `OPT_CONNECT_TIMEOUT`, `OPT_RECV_TIMEOUT`, `OPT_SEND_TIMEOUT`, `OPT_POLL_TIMEOUT` (fallback per-write `stream_select()` budget when `OPT_SEND_TIMEOUT` is unset; default `1000` ms), `OPT_NOREPLY`, `OPT_BUFFER_WRITES`, `OPT_VERIFY_KEY`, `OPT_TCP_NODELAY`, `OPT_TCP_KEEPALIVE`, `OPT_SOCKET_SEND_SIZE`, `OPT_SOCKET_RECV_SIZE`, `OPT_IO_BYTES_WATERMARK` (auto-flushes the meta-protocol write buffer once this many bytes are queued), `OPT_CORK` (Linux `TCP_CORK`; no-op elsewhere — matches libmemcached).
+- Accepted for PECL config compatibility, but currently stored only on the client (no behavioral effect on the wire): `OPT_IO_MSG_WATERMARK`, `OPT_IO_KEY_PREFETCH`. `getOption()` reflects whatever was set; the meta protocol I/O loop does not consume them yet.
 - Server-pool management implemented across every backend: `OPT_SORT_HOSTS`, `OPT_REMOVE_FAILED_SERVERS`, `OPT_SERVER_FAILURE_LIMIT`, `OPT_SERVER_TIMEOUT_LIMIT`, `OPT_RETRY_TIMEOUT`, `OPT_DEAD_TIMEOUT`, `OPT_STORE_RETRY_COUNT`, `OPT_NUMBER_OF_REPLICAS`, `OPT_RANDOMIZE_REPLICA_READ`. Writes fan-out to the primary plus `OPT_NUMBER_OF_REPLICAS` replicas; reads pick a random replica when `OPT_RANDOMIZE_REPLICA_READ` is on; failed primaries are routed around for the configured retry/dead window.
 - `OPT_NO_BLOCK` is accepted and reported like PECL for configuration compatibility, but operations still use blocking PHP streams with configured timeouts rather than libmemcached's non-blocking state machine.
 - Local application storage: `OPT_USER_DATA`.
@@ -342,7 +344,7 @@ The library is intentionally PECL-shaped, but it is not a libmemcached binding. 
 
 - Protocol/network modes not implemented by the pure PHP meta client: `OPT_BINARY_PROTOCOL`, `OPT_USE_UDP`.
 - File/native-extension integration options: `OPT_LOAD_FROM_FILE`, `OPT_SUPPORT_CAS`, `OPT_TCP_KEEPIDLE`.
-- Authentication/encryption: `setSaslAuthData()` and `setEncodingKey()` return `RES_NOT_SUPPORTED`.
+- Authentication: `setSaslAuthData()` returns `RES_NOT_SUPPORTED` on every backend — there is no binary SASL handshake in the pure-PHP transport. Redis credentials are configured via the connection-string URL instead (`redis://user:pass@host/db`).
 - `delete($key, $time)` / `deleteByKey()` / `deleteMulti*()` with a positive delayed-delete time return `RES_NOT_SUPPORTED` on every backend — only immediate deletion is supported. Negative `$time` is rejected with `RES_INVALID_ARGUMENTS`.
 
 ### Security note: PHP-serialized objects
@@ -362,3 +364,16 @@ When enabled, PHP-serialized values are read with `allowed_classes = true` for f
 - `COMPRESSION_FASTLZ` requires a compatible `fastlz_*` extension. If it is unavailable, values are stored uncompressed instead of using a non-compatible stand-in.
 - `COMPRESSION_ZLIB` works when `ext-zlib` is available.
 - `COMPRESSION_ZSTD` requires a compatible Zstandard extension.
+
+### Encryption (`setEncodingKey`)
+
+`setEncodingKey($key)` enables transparent AES encryption of cached values across every backend. The key is hashed client-side and fed into the value codec, so the cipher runs **after** serialization/compression and **before** the bytes hit the wire — no backend ever sees plaintext, and `OPT_SERIALIZER` / `OPT_COMPRESSION` keep working unchanged on top of an encrypted pool.
+
+Two modes are exposed via `OPT_ENCODING_MODE` (PureCache extension — no PECL counterpart):
+
+- `ENCODING_MODE_LIBMEMCACHED` (default) — bit-compatible with libmemcached's `memcached_set_encoding_key()`: AES-128-ECB with zero padding, key = `md5(raw_user_key)`. No flag bit is set on stored entries. Useful only for round-tripping existing libmemcached-encrypted caches; the algorithm has no integrity check and leaks repeating 16-byte plaintext blocks.
+- `ENCODING_MODE_AEAD` — modern AEAD: AES-256-GCM with a per-value random 12-byte nonce, 16-byte authentication tag, and a marker bit on the stored `flags`. Existing unencrypted entries in the same pool keep round-tripping unchanged.
+
+Both modes require `ext-openssl`; `setEncodingKey()` returns `RES_NOT_SUPPORTED` (`encoding requires ext-openssl`) when it is missing, and `RES_INVALID_ARGUMENTS` on an empty key. `setOption(OPT_ENCODING_MODE, …)` clears any previously-installed key so the next encoded value uses the new format unambiguously. `append`/`prepend` against an active encoding key are rejected with `RES_NOTSTORED` — concatenating onto existing ciphertext would corrupt the entry.
+
+`HAVE_ENCODING` mirrors libmemcached's compile-time flag: at the PHP layer it is simply `extension_loaded('openssl')`.
