@@ -114,7 +114,7 @@ final class MemcachedClient extends AbstractCacheClient
             $this->setResult(self::RES_SUCCESS);
 
             return $this->valueForGetFlags($this->entryFromMeta($item), $getFlags);
-        });
+        }, forRead: true);
     }
 
     /**
@@ -297,30 +297,31 @@ final class MemcachedClient extends AbstractCacheClient
             return false;
         }
 
-        $idx = $this->pickServerIndex($serverKey, $key);
-        try {
-            if (!$this->shouldBufferNoReplyWrite()) {
-                $this->flushNetworkWrites();
+        return $this->retryStoreOnFailure($serverKey, $key, function (int $idx) use ($cmd): bool {
+            try {
+                if (!$this->shouldBufferNoReplyWrite()) {
+                    $this->flushNetworkWrites();
+                }
+
+                $c = $this->core()->conn->get($idx);
+                $this->send($c, $cmd);
+                if ($this->useNoReply()) {
+                    $this->setResult(self::RES_SUCCESS);
+
+                    return true;
+                }
+
+                $reader = new MetaReader($c);
+                $r = $reader->readOne(false);
+
+                return $this->mapStoreResult($r);
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($idx, $throwable);
+                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+
+                return false;
             }
-
-            $c = $this->core()->conn->get($idx);
-            $this->send($c, $cmd);
-            if ($this->useNoReply()) {
-                $this->setResult(self::RES_SUCCESS);
-
-                return true;
-            }
-
-            $reader = new MetaReader($c);
-            $r = $reader->readOne(false);
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
-
-            return false;
-        }
-
-        return $this->mapStoreResult($r);
+        });
     }
 
     /**
@@ -407,7 +408,7 @@ final class MemcachedClient extends AbstractCacheClient
                 'EN' => $this->failResult(self::RES_NOTFOUND),
                 default => $this->failResult(self::RES_FAILURE),
             };
-        });
+        }, fanoutWrite: true);
     }
 
     #[\Override]
@@ -438,34 +439,35 @@ final class MemcachedClient extends AbstractCacheClient
             $this->flushNetworkWrites();
         }
 
-        $idx = $this->pickServerIndex($serverKey, $key);
-        try {
-            $c = $this->core()->conn->get($idx);
-            $this->send($c, MetaCommandBuilder::metaDelete($pk, $this->useNoReply()));
-            if ($this->useNoReply()) {
-                $this->setResult(self::RES_SUCCESS);
+        return $this->writeFanout($serverKey, $key, function (int $idx) use ($pk): bool {
+            try {
+                $c = $this->core()->conn->get($idx);
+                $this->send($c, MetaCommandBuilder::metaDelete($pk, $this->useNoReply()));
+                if ($this->useNoReply()) {
+                    $this->setResult(self::RES_SUCCESS);
 
-                return true;
+                    return true;
+                }
+
+                $reader = new MetaReader($c);
+                $r = $reader->readOne(false);
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($idx, $throwable);
+                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+
+                return false;
             }
 
-            $reader = new MetaReader($c);
-            $r = $reader->readOne(false);
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+            if ($this->applyMetaWireError($r)) {
+                return false;
+            }
 
-            return false;
-        }
-
-        if ($this->applyMetaWireError($r)) {
-            return false;
-        }
-
-        return match ($r->code) {
-            'HD' => $this->okResult(self::RES_SUCCESS),
-            'NF' => $this->failResult(self::RES_NOTFOUND),
-            default => $this->failResult(self::RES_FAILURE),
-        };
+            return match ($r->code) {
+                'HD' => $this->okResult(self::RES_SUCCESS),
+                'NF' => $this->failResult(self::RES_NOTFOUND),
+                default => $this->failResult(self::RES_FAILURE),
+            };
+        });
     }
 
     #[\Override]

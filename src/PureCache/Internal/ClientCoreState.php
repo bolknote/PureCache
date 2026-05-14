@@ -15,6 +15,8 @@ abstract class ClientCoreState
 {
     public ServerSelector $selector;
 
+    public ServerFailureTracker $failureTracker;
+
     /** @var array<int, mixed> */
     public array $options = [];
 
@@ -52,7 +54,9 @@ abstract class ClientCoreState
     protected function initDefaults(?string $persistentId): void
     {
         $this->persistentId = $persistentId;
+        $this->failureTracker = new ServerFailureTracker();
         $this->selector = new ServerSelector();
+        $this->selector->setFailureTracker($this->failureTracker);
         $this->options = ClientOptions::defaults();
         $this->resultCode = MemcachedConstants::RES_SUCCESS;
         $this->resultMessage = '';

@@ -13,6 +13,7 @@ use PureCache\Internal\KeyFormatter;
 use PureCache\Internal\OptionEnvironment;
 use PureCache\Internal\ServerEndpoint;
 use PureCache\Internal\StoreMode;
+use PureCache\Memcached\Internal\TimeoutException;
 
 /**
  * Backend-agnostic PECL {@code \Memcached}-shaped surface.
@@ -1099,6 +1100,129 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     }
 
     /**
+     * Like {@see pickServerIndex()} but consults
+     * {@code OPT_NUMBER_OF_REPLICAS} + {@code OPT_RANDOMIZE_REPLICA_READ} to
+     * spread read traffic across the configured replica set when both are
+     * enabled. Falls back to the primary when replicas are disabled or the
+     * randomized pick would otherwise return the same index.
+     */
+    protected function pickReadServerIndex(?string $serverKey, string $key): int
+    {
+        $replicas = $this->optionInt(self::OPT_NUMBER_OF_REPLICAS, 0);
+        if ($replicas <= 0 || !$this->optionBool(self::OPT_RANDOMIZE_REPLICA_READ, false)) {
+            return $this->pickServerIndex($serverKey, $key);
+        }
+
+        $routingKey = $serverKey ?? $this->routingKey($key);
+        $idx = $this->core->selector->pickReadIndex($routingKey, $replicas, true);
+
+        return $idx < 0 ? $this->pickServerIndex($serverKey, $key) : $idx;
+    }
+
+    /**
+     * Wrap {@see writeFanout()} with {@code OPT_STORE_RETRY_COUNT} retries onto
+     * a different live server when the primary fan-out comes back with
+     * {@code RES_FAILURE}. Non-failure outcomes (RES_NOTSTORED, RES_DATA_EXISTS,
+     * RES_E2BIG…) are surfaced verbatim so {@code add()/replace()/cas()} keep
+     * their PECL contract.
+     */
+    protected function retryStoreOnFailure(?string $serverKey, string $key, \Closure $writer): bool
+    {
+        if ($this->writeFanout($serverKey, $key, $writer)) {
+            return true;
+        }
+
+        $retryCount = $this->optionInt(self::OPT_STORE_RETRY_COUNT, 0);
+        if ($retryCount <= 0 || self::RES_FAILURE !== $this->core->resultCode) {
+            return false;
+        }
+
+        $failureCode = $this->core->resultCode;
+        $failureMessage = $this->core->resultMessage;
+        $totalServers = \count($this->core->selector->getServers());
+        if (0 === $totalServers) {
+            return false;
+        }
+
+        $tried = [$this->pickServerIndex($serverKey, $key)];
+        for ($attempt = 0; $attempt < $retryCount; ++$attempt) {
+            $live = $this->core->failureTracker->availableIndices($totalServers);
+            $candidates = array_values(array_diff($live, $tried));
+            if ([] === $candidates) {
+                break;
+            }
+
+            $idx = $candidates[0];
+            $tried[] = $idx;
+            try {
+                $writerResult = $writer($idx);
+                if ($writerResult) {
+                    $this->recordServerSuccess($idx);
+
+                    return true;
+                }
+
+                if (self::RES_FAILURE !== $this->core->resultCode) {
+                    // The writer reported a non-retriable response (e.g.
+                    // RES_NOTSTORED) — surface it verbatim.
+                    return false;
+                }
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($idx, $throwable);
+            }
+        }
+
+        $this->setResult($failureCode, $failureMessage);
+
+        return false;
+    }
+
+    /**
+     * Fan-out a single write to the primary plus any {@code OPT_NUMBER_OF_REPLICAS}
+     * additional servers. Replica failures are best-effort and never propagated
+     * — the caller's outcome is whatever the primary returned, with its
+     * {@code RES_*} preserved so the public surface mirrors a single-server write.
+     *
+     * @param \Closure(int $serverIndex): bool $writer must return {@code true} when the write succeeded on {@code $serverIndex}; if it throws, the exception is captured as a per-server failure
+     */
+    protected function writeFanout(?string $serverKey, string $key, \Closure $writer): bool
+    {
+        $replicas = $this->optionInt(self::OPT_NUMBER_OF_REPLICAS, 0);
+        $routingKey = $serverKey ?? $this->routingKey($key);
+        $indices = $this->core->selector->pickReplicaIndices($routingKey, $replicas);
+        if ([] === $indices) {
+            $this->setResult(self::RES_NO_SERVERS);
+
+            return false;
+        }
+
+        $primaryIdx = $indices[0];
+        $primaryOk = (bool) $writer($primaryIdx);
+        if ($primaryOk) {
+            $this->recordServerSuccess($primaryIdx);
+        }
+
+        $primaryCode = $this->core->resultCode;
+        $primaryMsg = $this->core->resultMessage;
+
+        for ($i = 1, $n = \count($indices); $i < $n; ++$i) {
+            $replicaIdx = $indices[$i];
+            try {
+                $replicaOk = (bool) $writer($replicaIdx);
+                if ($replicaOk) {
+                    $this->recordServerSuccess($replicaIdx);
+                }
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($replicaIdx, $throwable);
+            }
+        }
+
+        $this->setResult($primaryCode, $primaryMsg);
+
+        return $primaryOk;
+    }
+
+    /**
      * Group {@code $keys} (already coerced to strings) by their target shard, returning
      * pairs of {@code [originalKey, prefixedKey]}. {@code $serverKey} short-circuits the
      * Ketama/modula lookup so every key in the call goes to the same shard.
@@ -1150,6 +1274,8 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         ?string $serverKey,
         \Closure $body,
         mixed $failureValue = false,
+        bool $forRead = false,
+        bool $fanoutWrite = false,
     ): mixed {
         $this->pristine = false;
         $pk = $this->prefixedKey($key);
@@ -1163,10 +1289,19 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             return $failureValue;
         }
 
-        $idx = $this->pickServerIndex($serverKey, $key);
+        if ($fanoutWrite) {
+            return $this->executeKeyedFanout($key, $serverKey, $pk, $body, $failureValue);
+        }
+
+        $idx = $forRead
+            ? $this->pickReadServerIndex($serverKey, $key)
+            : $this->pickServerIndex($serverKey, $key);
 
         try {
-            return $body($idx, $pk);
+            $result = $body($idx, $pk);
+            $this->recordServerSuccess($idx);
+
+            return $result;
         } catch (\Throwable $throwable) {
             $this->recordServerFailure($idx, $throwable);
             $this->setResult(self::RES_FAILURE, $throwable->getMessage());
@@ -1175,6 +1310,72 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         }
     }
 
+    /**
+     * Replica-aware variant of {@see executeKeyed()}: runs {@code $body} on
+     * the primary server plus every replica index returned by the selector.
+     * The caller observes the primary's outcome — replica failures are
+     * recorded against the failure tracker but never bubble up.
+     *
+     * @template TResult
+     *
+     * @param \Closure(int $serverIndex, string $prefixedKey): TResult $body
+     * @param TResult                                                  $failureValue value returned on any pre-flight failure or thrown exception
+     *
+     * @return TResult
+     */
+    private function executeKeyedFanout(
+        string $key,
+        ?string $serverKey,
+        string $prefixedKey,
+        \Closure $body,
+        mixed $failureValue,
+    ): mixed {
+        $replicas = $this->optionInt(self::OPT_NUMBER_OF_REPLICAS, 0);
+        $routingKey = $serverKey ?? $this->routingKey($key);
+        $indices = $this->core->selector->pickReplicaIndices($routingKey, $replicas);
+        if ([] === $indices) {
+            $this->setResult(self::RES_NO_SERVERS);
+
+            return $failureValue;
+        }
+
+        $primaryIdx = $indices[0];
+        try {
+            $result = $body($primaryIdx, $prefixedKey);
+            $this->recordServerSuccess($primaryIdx);
+        } catch (\Throwable $throwable) {
+            $this->recordServerFailure($primaryIdx, $throwable);
+            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+
+            return $failureValue;
+        }
+
+        $primaryCode = $this->core->resultCode;
+        $primaryMsg = $this->core->resultMessage;
+
+        for ($i = 1, $n = \count($indices); $i < $n; ++$i) {
+            $replicaIdx = $indices[$i];
+            try {
+                $body($replicaIdx, $prefixedKey);
+                $this->recordServerSuccess($replicaIdx);
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($replicaIdx, $throwable);
+            }
+        }
+
+        $this->setResult($primaryCode, $primaryMsg);
+
+        return $result;
+    }
+
+    /**
+     * Update the failure tracker plus {@code lastDisconnectedServer} when an
+     * operation against {@code $serverIndex} fails. {@see TimeoutException}
+     * (and PECL-compatible {@code 'timeout'}/{@code 'timed out'} substrings
+     * in the message) is reported separately so libmemcached's
+     * {@code OPT_SERVER_TIMEOUT_LIMIT} accounting works alongside
+     * {@code OPT_SERVER_FAILURE_LIMIT}.
+     */
     protected function recordServerFailure(?int $serverIndex, \Throwable $throwable): void
     {
         $this->core->lastErrorErrno = $throwable->getCode();
@@ -1193,6 +1394,25 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             'weight' => $server['weight'],
             'type' => ServerEndpoint::listType($server['host']),
         ];
+
+        $isTimeout = $throwable instanceof TimeoutException
+            || (false !== stripos($throwable->getMessage(), 'timeout'))
+            || (false !== stripos($throwable->getMessage(), 'timed out'));
+        $this->core->failureTracker->recordFailure($serverIndex, $isTimeout);
+    }
+
+    /**
+     * Reset the failure tracker for {@code $serverIndex} after a successful
+     * round-trip. Mirrors libmemcached's "clear-on-success" contract so a
+     * single recovery hides previous failures.
+     */
+    protected function recordServerSuccess(?int $serverIndex): void
+    {
+        if (null === $serverIndex || $serverIndex < 0) {
+            return;
+        }
+
+        $this->core->failureTracker->recordSuccess($serverIndex);
     }
 
     /**

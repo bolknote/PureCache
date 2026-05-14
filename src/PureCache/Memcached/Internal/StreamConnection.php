@@ -29,6 +29,9 @@ final class StreamConnection
         private readonly bool $tcpKeepAlive = false,
         private readonly int $socketSendSize = 0,
         private readonly int $socketRecvSize = 0,
+        private readonly bool $tcpCork = false,
+        private readonly int $pollTimeoutMs = 1000,
+        private readonly int $ioBytesWatermark = 0,
     ) {
     }
 
@@ -215,6 +218,34 @@ final class StreamConnection
         if ($this->socketRecvSize > 0 && \defined('SO_RCVBUF')) {
             @socket_set_option($importedSocket, \SOL_SOCKET, \SO_RCVBUF, $this->socketRecvSize);
         }
+
+        if ($this->tcpCork) {
+            $this->applyTcpCork($importedSocket);
+        }
+    }
+
+    /**
+     * Apply {@code TCP_CORK} (Linux) to the imported socket. Constant id 3 is
+     * the canonical {@code TCP_CORK} value from {@code linux/tcp.h} — neither
+     * PHP nor ext-sockets export it as a named constant, so we look it up at
+     * runtime when {@code SOL_TCP} is available. macOS/BSD use {@code TCP_NOPUSH}
+     * (id 4) with slightly different semantics; libmemcached treats {@code OPT_CORK}
+     * as Linux-only, so we silently no-op there.
+     */
+    private function applyTcpCork(\Socket $socket): void
+    {
+        if (!\defined('SOL_TCP')) {
+            return;
+        }
+
+        if ('Linux' !== \PHP_OS_FAMILY) {
+            return;
+        }
+
+        // PHP 8.5+ exposes TCP_CORK as a named constant on Linux builds;
+        // older versions still respect the bare integer.
+        $cork = \defined('TCP_CORK') ? \TCP_CORK : 3;
+        @socket_set_option($socket, \SOL_TCP, $cork, 1);
     }
 
     public function close(): void
@@ -232,6 +263,30 @@ final class StreamConnection
     public function bufferWrite(string $data): void
     {
         $this->writeBuffer .= $data;
+        if ($this->ioBytesWatermark > 0 && \strlen($this->writeBuffer) >= $this->ioBytesWatermark) {
+            $this->flushWrite();
+        }
+    }
+
+    /**
+     * Returns the per-write {@code stream_select()} budget in microseconds.
+     * {@code OPT_SEND_TIMEOUT} wins when set; otherwise falls back to
+     * {@code OPT_POLL_TIMEOUT} (which libmemcached uses as the generic
+     * I/O readiness budget). When neither is set we return {@code null} so
+     * the caller skips {@code stream_select()} entirely (the same legacy
+     * behaviour as before).
+     */
+    private function effectiveWriteWaitUsec(): ?int
+    {
+        if (null !== $this->sendTimeoutUsec && $this->sendTimeoutUsec > 0) {
+            return $this->sendTimeoutUsec;
+        }
+
+        if ($this->pollTimeoutMs > 0) {
+            return $this->pollTimeoutMs * 1000;
+        }
+
+        return null;
     }
 
     public function write(string $data): void
@@ -261,7 +316,8 @@ final class StreamConnection
         }
 
         while ($off < $len) {
-            if (null !== $this->sendTimeoutUsec && $this->sendTimeoutUsec > 0) {
+            $writeWaitUsec = $this->effectiveWriteWaitUsec();
+            if (null !== $writeWaitUsec && $writeWaitUsec > 0) {
                 $read = null;
                 $write = [$socket];
                 $except = null;
@@ -269,13 +325,13 @@ final class StreamConnection
                     $read,
                     $write,
                     $except,
-                    intdiv($this->sendTimeoutUsec, 1_000_000),
-                    $this->sendTimeoutUsec % 1_000_000,
+                    intdiv($writeWaitUsec, 1_000_000),
+                    $writeWaitUsec % 1_000_000,
                 );
                 if (false === $ready || 0 === $ready) {
                     $this->writeBuffer = substr($buf, $off);
                     $this->close();
-                    throw new ConnectionException('Write timeout to memcached');
+                    throw new TimeoutException('Write timeout to memcached');
                 }
             }
 
@@ -292,7 +348,7 @@ final class StreamConnection
                 $this->writeBuffer = substr($buf, $off);
                 $this->close();
                 if ($meta['timed_out']) {
-                    throw new ConnectionException('Write timeout to memcached');
+                    throw new TimeoutException('Write timeout to memcached');
                 }
 
                 $err = error_get_last();
@@ -392,7 +448,7 @@ final class StreamConnection
             $meta = stream_get_meta_data($socket);
             $this->close();
             if ($meta['timed_out']) {
-                throw new ConnectionException('Read timeout');
+                throw new TimeoutException('Read timeout');
             }
 
             $err = error_get_last();
@@ -424,7 +480,7 @@ final class StreamConnection
                 $meta = stream_get_meta_data($socket);
                 $this->close();
                 if ($meta['timed_out']) {
-                    throw new ConnectionException('Read timeout');
+                    throw new TimeoutException('Read timeout');
                 }
 
                 $err = error_get_last();

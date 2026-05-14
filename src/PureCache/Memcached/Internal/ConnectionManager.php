@@ -24,7 +24,27 @@ final class ConnectionManager
         private readonly bool $tcpKeepAlive = false,
         private readonly int $socketSendSize = 0,
         private readonly int $socketRecvSize = 0,
+        private readonly bool $tcpCork = false,
+        private readonly int $pollTimeoutMs = 1000,
+        private readonly int $ioBytesWatermark = 0,
+        private readonly int $ioMsgWatermark = 0,
+        private readonly int $ioKeyPrefetch = 0,
     ) {
+    }
+
+    public function ioBytesWatermark(): int
+    {
+        return $this->ioBytesWatermark;
+    }
+
+    public function ioMsgWatermark(): int
+    {
+        return $this->ioMsgWatermark;
+    }
+
+    public function ioKeyPrefetch(): int
+    {
+        return $this->ioKeyPrefetch;
     }
 
     public function resetPool(): void
@@ -51,6 +71,9 @@ final class ConnectionManager
                 $this->tcpKeepAlive,
                 $this->socketSendSize,
                 $this->socketRecvSize,
+                $this->tcpCork,
+                $this->pollTimeoutMs,
+                $this->ioBytesWatermark,
             );
         }
 

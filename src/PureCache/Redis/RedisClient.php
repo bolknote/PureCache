@@ -111,7 +111,7 @@ final class RedisClient extends AbstractCacheClient
             $this->setResult(self::RES_SUCCESS);
 
             return $this->valueForGetFlags($entry, $getFlags);
-        });
+        }, forRead: true);
     }
 
     /**
@@ -275,8 +275,6 @@ final class RedisClient extends AbstractCacheClient
             return false;
         }
 
-        $idx = $this->pickServerIndex($serverKey, $key);
-
         if (!$this->shouldBufferNoReplyWrite()) {
             $this->flushWriteBuffer();
         }
@@ -290,14 +288,16 @@ final class RedisClient extends AbstractCacheClient
             default => $this->makeCasSetClosure($rk, $payload, $flags, $ttl, $casToken ?? ''),
         };
 
-        try {
-            return $this->runStoreFn($fn, $idx);
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+        return $this->retryStoreOnFailure($serverKey, $key, function (int $idx) use ($fn): bool {
+            try {
+                return $this->runStoreFn($fn, $idx);
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($idx, $throwable);
+                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
 
-            return false;
-        }
+                return false;
+            }
+        });
     }
 
     /**
@@ -479,7 +479,7 @@ final class RedisClient extends AbstractCacheClient
             $this->setResult(self::RES_SUCCESS);
 
             return true;
-        });
+        }, fanoutWrite: true);
     }
 
     #[\Override]
@@ -507,41 +507,42 @@ final class RedisClient extends AbstractCacheClient
             $this->flushWriteBuffer();
         }
 
-        $idx = $this->pickServerIndex($serverKey, $key);
-        try {
-            $rk = $this->itemRedisKey($pk);
-            $fn = static function (NativeRedisClient $r) use ($rk): void {
-                $r->del([$rk]);
-            };
+        return $this->writeFanout($serverKey, $key, function (int $idx) use ($pk): bool {
+            try {
+                $rk = $this->itemRedisKey($pk);
+                $fn = static function (NativeRedisClient $r) use ($rk): void {
+                    $r->del([$rk]);
+                };
 
-            if ($this->useNoReply()) {
-                $this->enqueueWrite($fn, $idx);
+                if ($this->useNoReply()) {
+                    $this->enqueueWrite($fn, $idx);
+                    $this->setResult(self::RES_SUCCESS);
+
+                    return true;
+                }
+
+                $n = 0;
+                $this->enqueueWrite(static function (NativeRedisClient $r) use ($rk, &$n): void {
+                    $n = $r->del([$rk]);
+                }, $idx);
+                $this->flushWriteBuffer();
+
+                if (0 === $n) {
+                    $this->setResult(self::RES_NOTFOUND);
+
+                    return false;
+                }
+
                 $this->setResult(self::RES_SUCCESS);
 
                 return true;
-            }
-
-            $n = 0;
-            $this->enqueueWrite(static function (NativeRedisClient $r) use ($rk, &$n): void {
-                $n = $r->del([$rk]);
-            }, $idx);
-            $this->flushWriteBuffer();
-
-            if (0 === $n) {
-                $this->setResult(self::RES_NOTFOUND);
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($idx, $throwable);
+                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
 
                 return false;
             }
-
-            $this->setResult(self::RES_SUCCESS);
-
-            return true;
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
-
-            return false;
-        }
+        });
     }
 
     #[\Override]

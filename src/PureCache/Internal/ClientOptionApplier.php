@@ -42,6 +42,14 @@ final class ClientOptionApplier
             return self::applyLibketamaHash($value);
         }
 
+        if (self::isFailoverBooleanOption($option)) {
+            return self::applyFailoverBoolean($core, $option, $value, $env);
+        }
+
+        if (self::isFailoverNonNegativeIntOption($option)) {
+            return self::applyFailoverNonNegativeInt($core, $option, $value, $env);
+        }
+
         if ($env->isUnsupportedOption($option) || self::isGloballyUnsupported($option)) {
             return ClientOptionResult::failure(MemcachedConstants::RES_NOT_SUPPORTED, $env->unsupportedOptionMessage());
         }
@@ -368,23 +376,130 @@ final class ClientOptionApplier
         return \in_array($option, [
             MemcachedConstants::OPT_BINARY_PROTOCOL,
             MemcachedConstants::OPT_USE_UDP,
-            MemcachedConstants::OPT_SORT_HOSTS,
-            MemcachedConstants::OPT_REMOVE_FAILED_SERVERS,
-            MemcachedConstants::OPT_RANDOMIZE_REPLICA_READ,
-            MemcachedConstants::OPT_CORK,
-            MemcachedConstants::OPT_STORE_RETRY_COUNT,
-            MemcachedConstants::OPT_RETRY_TIMEOUT,
-            MemcachedConstants::OPT_DEAD_TIMEOUT,
-            MemcachedConstants::OPT_POLL_TIMEOUT,
-            MemcachedConstants::OPT_SERVER_FAILURE_LIMIT,
-            MemcachedConstants::OPT_SERVER_TIMEOUT_LIMIT,
-            MemcachedConstants::OPT_NUMBER_OF_REPLICAS,
-            MemcachedConstants::OPT_IO_BYTES_WATERMARK,
-            MemcachedConstants::OPT_IO_KEY_PREFETCH,
-            MemcachedConstants::OPT_IO_MSG_WATERMARK,
             MemcachedConstants::OPT_LOAD_FROM_FILE,
             MemcachedConstants::OPT_SUPPORT_CAS,
             MemcachedConstants::OPT_TCP_KEEPIDLE,
         ], true);
+    }
+
+    /**
+     * Boolean libmemcached failover/tuning toggles wired into shared client state.
+     *
+     * - {@code OPT_SORT_HOSTS} — selector resorts the server list lexicographically
+     *   and invalidates the ketama continuum so the next pick re-hashes.
+     * - {@code OPT_REMOVE_FAILED_SERVERS} — failure tracker switches between
+     *   "route around" (true) and "mark dead but keep in ring" (false).
+     * - {@code OPT_RANDOMIZE_REPLICA_READ} — consumed at read time by
+     *   {@see ServerSelector::pickReadIndex()}; setter just records the value.
+     * - {@code OPT_CORK} — memcached transport applies {@code TCP_CORK} on
+     *   Linux through {@see OptionEnvironment::onPoolInvalidated()} so the
+     *   socket is rebuilt with the new flag. No-op on macOS/BSD (matches
+     *   libmemcached's documented behaviour).
+     */
+    private static function isFailoverBooleanOption(int $option): bool
+    {
+        return \in_array($option, [
+            MemcachedConstants::OPT_SORT_HOSTS,
+            MemcachedConstants::OPT_REMOVE_FAILED_SERVERS,
+            MemcachedConstants::OPT_RANDOMIZE_REPLICA_READ,
+            MemcachedConstants::OPT_CORK,
+        ], true);
+    }
+
+    private static function applyFailoverBoolean(ClientCoreState $core, int $option, mixed $value, OptionEnvironment $env): ClientOptionResult
+    {
+        $enabled = (bool) $value;
+        $previous = $core->optionBool($option, false);
+        $core->options[$option] = $enabled;
+
+        if (MemcachedConstants::OPT_SORT_HOSTS === $option) {
+            $core->selector->setSortHosts($enabled);
+            if ($previous !== $enabled) {
+                $env->onPoolInvalidated();
+            }
+
+            return ClientOptionResult::success();
+        }
+
+        if (MemcachedConstants::OPT_REMOVE_FAILED_SERVERS === $option) {
+            $core->failureTracker->setRemoveFailed($enabled);
+
+            return ClientOptionResult::success();
+        }
+
+        if (MemcachedConstants::OPT_CORK === $option) {
+            if ($previous !== $enabled) {
+                // Route through onTimeoutsChanged() — the memcached transport
+                // only reads OPT_CORK in the ConnectionManager constructor,
+                // so a plain pool invalidation (closeAll()) would leave the
+                // old cork flag on the manager itself.
+                $env->onTimeoutsChanged();
+            }
+
+            return ClientOptionResult::success();
+        }
+
+        return ClientOptionResult::success();
+    }
+
+    /**
+     * Non-negative integer failover/tuning options pushed into the shared
+     * tracker, selector, and transport surfaces. Generic non-negative ints
+     * still live in {@see applyNonNegativeInt()} — these branches additionally
+     * mirror the value into a tracker/transport field so subsequent requests
+     * see the new value without going through PECL's full reconfigure dance.
+     */
+    private static function isFailoverNonNegativeIntOption(int $option): bool
+    {
+        return \in_array($option, [
+            MemcachedConstants::OPT_SERVER_FAILURE_LIMIT,
+            MemcachedConstants::OPT_SERVER_TIMEOUT_LIMIT,
+            MemcachedConstants::OPT_NUMBER_OF_REPLICAS,
+            MemcachedConstants::OPT_STORE_RETRY_COUNT,
+            MemcachedConstants::OPT_RETRY_TIMEOUT,
+            MemcachedConstants::OPT_DEAD_TIMEOUT,
+            MemcachedConstants::OPT_POLL_TIMEOUT,
+            MemcachedConstants::OPT_IO_BYTES_WATERMARK,
+            MemcachedConstants::OPT_IO_MSG_WATERMARK,
+            MemcachedConstants::OPT_IO_KEY_PREFETCH,
+        ], true);
+    }
+
+    private static function applyFailoverNonNegativeInt(ClientCoreState $core, int $option, mixed $value, OptionEnvironment $env): ClientOptionResult
+    {
+        $integer = ClientOptions::intValue($value);
+        if (null === $integer || $integer < 0) {
+            return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
+        }
+
+        $core->options[$option] = $integer;
+
+        switch ($option) {
+            case MemcachedConstants::OPT_SERVER_FAILURE_LIMIT:
+                $core->failureTracker->setFailureLimit($integer);
+                break;
+            case MemcachedConstants::OPT_SERVER_TIMEOUT_LIMIT:
+                $core->failureTracker->setTimeoutLimit($integer);
+                break;
+            case MemcachedConstants::OPT_RETRY_TIMEOUT:
+                $core->failureTracker->setRetryTimeoutSec($integer);
+                break;
+            case MemcachedConstants::OPT_DEAD_TIMEOUT:
+                $core->failureTracker->setDeadTimeoutSec($integer);
+                break;
+            case MemcachedConstants::OPT_POLL_TIMEOUT:
+            case MemcachedConstants::OPT_IO_BYTES_WATERMARK:
+            case MemcachedConstants::OPT_IO_MSG_WATERMARK:
+            case MemcachedConstants::OPT_IO_KEY_PREFETCH:
+                $env->onTimeoutsChanged();
+                break;
+            case MemcachedConstants::OPT_NUMBER_OF_REPLICAS:
+            case MemcachedConstants::OPT_STORE_RETRY_COUNT:
+                // Stored in $core->options; consumed by AbstractCacheClient
+                // helpers at request time. No transport rebuild required.
+                break;
+        }
+
+        return ClientOptionResult::success();
     }
 }

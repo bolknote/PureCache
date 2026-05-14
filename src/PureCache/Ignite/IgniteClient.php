@@ -130,7 +130,7 @@ final class IgniteClient extends AbstractCacheClient
             $this->setResult(self::RES_SUCCESS);
 
             return $this->valueForGetFlags($entry, $getFlags);
-        });
+        }, forRead: true);
     }
 
     /**
@@ -270,23 +270,23 @@ final class IgniteClient extends AbstractCacheClient
             return false;
         }
 
-        $idx = $this->pickServerIndex($serverKey, $key);
+        return $this->retryStoreOnFailure($serverKey, $key, function (int $idx) use ($pk, $payload, $flags, $mode, $casToken): bool {
+            try {
+                $cacheId = $this->cacheIdFor($idx);
+                $client = $this->clientFor($idx);
 
-        try {
-            $cacheId = $this->cacheIdFor($idx);
-            $client = $this->clientFor($idx);
+                return match ($mode) {
+                    StoreMode::Add => $this->storeAddViaPutIfAbsent($client, $cacheId, $pk, $payload, $flags),
+                    StoreMode::Replace => $this->storeReplace($client, $cacheId, $pk, $payload, $flags),
+                    default => $this->storeSetOrCas($client, $cacheId, $pk, $payload, $flags, $casToken),
+                };
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($idx, $throwable);
+                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
 
-            return match ($mode) {
-                StoreMode::Add => $this->storeAddViaPutIfAbsent($client, $cacheId, $pk, $payload, $flags),
-                StoreMode::Replace => $this->storeReplace($client, $cacheId, $pk, $payload, $flags),
-                default => $this->storeSetOrCas($client, $cacheId, $pk, $payload, $flags, $casToken),
-            };
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
-
-            return false;
-        }
+                return false;
+            }
+        });
     }
 
     /**
@@ -327,7 +327,7 @@ final class IgniteClient extends AbstractCacheClient
             $this->setResult(self::RES_SUCCESS);
 
             return true;
-        });
+        }, fanoutWrite: true);
     }
 
     #[\Override]
@@ -350,23 +350,24 @@ final class IgniteClient extends AbstractCacheClient
             return false;
         }
 
-        $idx = $this->pickServerIndex($serverKey, $key);
-        try {
-            if (!$this->clientFor($idx)->cacheRemoveKey($this->cacheIdFor($idx), $pk)) {
-                $this->setResult(self::RES_NOTFOUND);
+        return $this->writeFanout($serverKey, $key, function (int $idx) use ($pk): bool {
+            try {
+                if (!$this->clientFor($idx)->cacheRemoveKey($this->cacheIdFor($idx), $pk)) {
+                    $this->setResult(self::RES_NOTFOUND);
+
+                    return false;
+                }
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($idx, $throwable);
+                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
 
                 return false;
             }
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
 
-            return false;
-        }
+            $this->setResult(self::RES_SUCCESS);
 
-        $this->setResult(self::RES_SUCCESS);
-
-        return true;
+            return true;
+        });
     }
 
     #[\Override]

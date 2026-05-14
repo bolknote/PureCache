@@ -49,6 +49,11 @@ final class MemcachedClientCore extends ClientCoreState
             $this->optionBool(MemcachedConstants::OPT_TCP_KEEPALIVE, false),
             $this->optionInt(MemcachedConstants::OPT_SOCKET_SEND_SIZE, 0),
             $this->optionInt(MemcachedConstants::OPT_SOCKET_RECV_SIZE, 0),
+            $this->optionBool(MemcachedConstants::OPT_CORK, false),
+            $this->optionInt(MemcachedConstants::OPT_POLL_TIMEOUT, 1000),
+            $this->optionInt(MemcachedConstants::OPT_IO_BYTES_WATERMARK, 0),
+            $this->optionInt(MemcachedConstants::OPT_IO_MSG_WATERMARK, 0),
+            $this->optionInt(MemcachedConstants::OPT_IO_KEY_PREFETCH, 0),
         );
     }
 }

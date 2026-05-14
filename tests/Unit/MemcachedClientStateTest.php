@@ -423,40 +423,65 @@ final class MemcachedClientStateTest extends TestCase
 
         foreach ([
             MemcachedClient::OPT_USE_UDP,
-            MemcachedClient::OPT_SORT_HOSTS,
-            MemcachedClient::OPT_REMOVE_FAILED_SERVERS,
-            MemcachedClient::OPT_RANDOMIZE_REPLICA_READ,
-            MemcachedClient::OPT_CORK,
+            MemcachedClient::OPT_BINARY_PROTOCOL,
+            MemcachedClient::OPT_LOAD_FROM_FILE,
+            MemcachedClient::OPT_SUPPORT_CAS,
+            MemcachedClient::OPT_TCP_KEEPIDLE,
         ] as $option) {
             self::assertFalse($client->setOption($option, true));
             self::assertSame(MemcachedClient::RES_NOT_SUPPORTED, $client->getResultCode());
             self::assertNotTrue($client->getOption($option));
         }
 
-        foreach ([
-            MemcachedClient::OPT_STORE_RETRY_COUNT,
-            MemcachedClient::OPT_RETRY_TIMEOUT,
-            MemcachedClient::OPT_DEAD_TIMEOUT,
-            MemcachedClient::OPT_POLL_TIMEOUT,
-            MemcachedClient::OPT_SERVER_FAILURE_LIMIT,
-            MemcachedClient::OPT_SERVER_TIMEOUT_LIMIT,
-            MemcachedClient::OPT_NUMBER_OF_REPLICAS,
-            MemcachedClient::OPT_IO_BYTES_WATERMARK,
-            MemcachedClient::OPT_IO_KEY_PREFETCH,
-            MemcachedClient::OPT_IO_MSG_WATERMARK,
-        ] as $option) {
-            self::assertFalse($client->setOption($option, 2));
-            self::assertSame(MemcachedClient::RES_NOT_SUPPORTED, $client->getResultCode());
-        }
-
-        self::assertSame(0, $client->getOption(MemcachedClient::OPT_STORE_RETRY_COUNT));
-        self::assertSame(0, $client->getOption(MemcachedClient::OPT_NUMBER_OF_REPLICAS));
         self::assertTrue($client->setOption(MemcachedClient::OPT_SOCKET_SEND_SIZE, 8192));
         self::assertSame(8192, $client->getOption(MemcachedClient::OPT_SOCKET_SEND_SIZE));
         self::assertTrue($client->setOption(MemcachedClient::OPT_SOCKET_RECV_SIZE, 8192));
         self::assertSame(8192, $client->getOption(MemcachedClient::OPT_SOCKET_RECV_SIZE));
         self::assertTrue($client->setOption(MemcachedClient::OPT_USER_DATA, ['user' => true]));
         self::assertSame(['user' => true], $client->getOption(MemcachedClient::OPT_USER_DATA));
+    }
+
+    /**
+     * Previously libmemcached's failover/tuning dials were rejected
+     * wholesale with RES_NOT_SUPPORTED. PureCache now wires each one into the
+     * shared selector / failure tracker / transport surface, so the contract
+     * is: setOption succeeds, getOption echoes the value back, negative
+     * integers are rejected with RES_INVALID_ARGUMENTS.
+     */
+    public function testFailoverAndTuningOptionsAreAccepted(): void
+    {
+        $client = new MemcachedClient();
+
+        foreach ([
+            MemcachedClient::OPT_SORT_HOSTS,
+            MemcachedClient::OPT_REMOVE_FAILED_SERVERS,
+            MemcachedClient::OPT_RANDOMIZE_REPLICA_READ,
+            MemcachedClient::OPT_CORK,
+        ] as $boolOption) {
+            self::assertTrue($client->setOption($boolOption, true), \sprintf('option %d should accept true', $boolOption));
+            self::assertTrue((bool) $client->getOption($boolOption));
+            self::assertTrue($client->setOption($boolOption, false));
+            self::assertFalse((bool) $client->getOption($boolOption));
+        }
+
+        foreach ([
+            MemcachedClient::OPT_STORE_RETRY_COUNT => 3,
+            MemcachedClient::OPT_RETRY_TIMEOUT => 5,
+            MemcachedClient::OPT_DEAD_TIMEOUT => 30,
+            MemcachedClient::OPT_POLL_TIMEOUT => 1500,
+            MemcachedClient::OPT_SERVER_FAILURE_LIMIT => 4,
+            MemcachedClient::OPT_SERVER_TIMEOUT_LIMIT => 2,
+            MemcachedClient::OPT_NUMBER_OF_REPLICAS => 2,
+            MemcachedClient::OPT_IO_BYTES_WATERMARK => 65536,
+            MemcachedClient::OPT_IO_KEY_PREFETCH => 8,
+            MemcachedClient::OPT_IO_MSG_WATERMARK => 16,
+        ] as $option => $value) {
+            self::assertTrue($client->setOption($option, $value), \sprintf('option %d should accept %d', $option, $value));
+            self::assertSame($value, $client->getOption($option));
+            self::assertFalse($client->setOption($option, -1));
+            self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+            self::assertSame($value, $client->getOption($option));
+        }
     }
 
     /**
