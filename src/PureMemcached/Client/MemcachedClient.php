@@ -1878,7 +1878,7 @@ final class MemcachedClient extends MemcachedConstants
     /**
      * Map meta wire errors (CLIENT_ERROR / SERVER_ERROR / …) to PECL-style result codes.
      *
-     * @return bool Whether $r was a wire error (caller should treat the operation as failed).
+     * @return bool whether $r was a wire error (caller should treat the operation as failed)
      */
     private function applyMetaWireError(MetaResult $r): bool
     {

@@ -10,7 +10,6 @@ use PureMemcached\Internal\ClientOptionApplier;
 use PureMemcached\Internal\KeyFormatter;
 use PureMemcached\Internal\MemcachedClientCore;
 use PureMemcached\Internal\MetaReader;
-use PureMemcached\Internal\MetaResult;
 use PureMemcached\Internal\MetaValueReader;
 use PureMemcached\Internal\StreamConnection;
 use PureMemcached\Internal\ValueCodec;
