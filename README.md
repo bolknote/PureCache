@@ -12,7 +12,9 @@ All implementation code lives under **`PureCache`** and **does not rely on** the
 - Multi-backend factory: `PureCache\ClientFactory` (see `PureCache\CacheClient`)
 - Constants (`RES_*`, `OPT_*`, …): `PureCache\MemcachedConstants` (abstract base class). The same names are also available as `MemcachedClient::RES_*` because the client extends that class.
 
-Example:
+All three clients share the same PECL-shaped API — only the class and transport differ.
+
+### Memcached (meta protocol)
 
 ```php
 use PureCache\Memcached\MemcachedClient;
@@ -21,6 +23,69 @@ $m = new MemcachedClient();
 $m->addServer('127.0.0.1', 11211);
 $m->set('k', 'v', 60);
 if ($m->getResultCode() === MemcachedClient::RES_SUCCESS) { /* … */ }
+```
+
+### Redis (RESP2 + Lua for atomic ops)
+
+```php
+use PureCache\Redis\RedisClient;
+use PureCache\MemcachedConstants;
+
+$r = new RedisClient();
+// Plain host/port:
+$r->addServer('127.0.0.1', 6379);
+// Or via a URL with auth, TLS-style scheme, and database index:
+$r->addServer('rediss://user:secret@cache.example.com:6380/2');
+
+$r->setOption(MemcachedConstants::OPT_PREFIX_KEY, 'app:');
+$r->set('session:42', ['logged_in' => true], 3600);
+
+// CAS works the same as on memcached — handled atomically via EVAL.
+$value = $r->get('counter', null, $cas);
+$r->cas($cas, 'counter', $value + 1);
+
+// increment_with_initial parity: missing key is seeded atomically.
+$r->increment('hits', 1, 0, 86_400);
+```
+
+### Apache Ignite (thin client binary protocol)
+
+```php
+use PureCache\Ignite\IgniteClient;
+use PureCache\MemcachedConstants;
+
+$i = new IgniteClient();
+$i->addServer('127.0.0.1', 10800);
+// Multiple endpoints are treated as independent shards (same as the
+// Redis backend); for a real Ignite cluster register one endpoint
+// and let the server-side partitioner handle distribution.
+
+$i->setOption(MemcachedConstants::OPT_PREFIX_KEY, 'pc:');
+$i->setMulti(['a' => 1, 'b' => 2, 'c' => 3]);
+
+$values = $i->getMulti(['a', 'b', 'c'], null, MemcachedConstants::GET_EXTENDED);
+// → ['a' => ['value' => 1, 'cas' => …, 'flags' => 0], …]
+```
+
+### Backend-agnostic factory
+
+`PureCache\ClientFactory::create()` picks an implementation by name and
+optionally hands it a connection string. The same factory accepts
+custom drivers registered through `ClientFactory::register()`.
+
+```php
+use PureCache\ClientFactory;
+use PureCache\CacheClient;
+
+// backend, $persistentId, $callback, $connection_str
+$client = ClientFactory::create('redis', null, null, 'redis://127.0.0.1:6379/0');
+// 'memcached' / 'mc'   → MemcachedClient
+// 'redis'              → RedisClient
+// 'ignite'  / 'ig'     → IgniteClient
+// null or ''           → MemcachedClient (default)
+
+assert($client instanceof CacheClient); // unified interface
+$client->set('k', 'v', 60);
 ```
 
 ## Auxiliary text commands
@@ -105,14 +170,22 @@ To run the Redis-backed integration tests, use:
 composer test:redis
 ```
 
-To run the Apache Ignite integration tests, start the bundled Ignite service from `docker-compose.yml` first and then run the wrapper script:
+To run the Apache Ignite integration tests:
 
 ```bash
-docker compose up -d ignite
 composer test:ignite
 ```
 
-The wrapper auto-detects whether `127.0.0.1:10800` is reachable (override with `IGNITE_TEST_HOST` / `IGNITE_TEST_PORT`) and exits cleanly when no Ignite endpoint is available so it can be wired into CI without hard-failing on missing infrastructure.
+The wrapper provisions Ignite on demand, mirroring how `test:integration` and `test:redis` spawn their backends:
+
+1. If `IGNITE_TEST_HOST` / `IGNITE_TEST_PORT` point at a reachable thin-client endpoint, the wrapper uses it as-is.
+2. Otherwise it looks for `bin/ignite.sh` under `IGNITE_HOME` or inside `cache/ignite/apache-ignite-${IGNITE_VERSION}-bin/`.
+3. If no local distribution is found, it downloads `apache-ignite-${IGNITE_VERSION}-bin.zip` (default `IGNITE_VERSION=2.16.0`) from `archive.apache.org`/`dlcdn.apache.org` into `cache/ignite/`, verifies the archive with `unzip -tq`, and extracts it.
+4. It then writes a minimal Spring XML config on a free local port, starts the JVM via `bash ignite.sh`, redirects Ignite logs to `cache/ignite/ignite-server.log` (only the start banner reaches the console), waits for the TCP port, and tears the whole process tree down at the end (the Ignite shell wrapper does not `exec` the JVM, so the runner pgrep-walks the descendants and SIGTERM/SIGKILLs the JVM directly).
+
+Requirements: a JDK 11+ runtime on `PATH` plus the `curl` and `unzip` binaries (both shipped with macOS and most Linux distros). The Apache Ignite jars are cached under `cache/ignite/`, which is git-ignored.
+
+If you prefer a containerized Ignite, `docker compose up -d ignite` from the bundled `docker-compose.yml` still works — the wrapper will detect the running container on `127.0.0.1:10800` and skip the local bootstrap.
 
 The parity runner starts a fresh memcached server and compares supported API behavior between `\Memcached` and `PureCache\Memcached\MemcachedClient`. If `memcached.so` is available in PHP's `extension_dir`, it is loaded via `-d`; if `igbinary.so` is also available, it is loaded first so `SERIALIZER_IGBINARY` parity is covered.
 

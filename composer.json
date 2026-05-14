@@ -1,6 +1,6 @@
 {
     "name": "purecache/cache",
-    "description": "PECL-compatible Memcached client in pure PHP using memcached meta protocol",
+    "description": "Pure PHP PECL-compatible Memcached API with memcached (meta protocol), Redis, and Apache Ignite backends",
     "type": "library",
     "license": "MIT",
     "config": {
