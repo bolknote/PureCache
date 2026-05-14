@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PureCache\Tests\Unit\PureCache;
 
 use PHPUnit\Framework\TestCase;
+use PureCache\Internal\ClientCoreState;
 use PureCache\Internal\ServerAvailability;
 use PureCache\Memcached\MemcachedClient;
 
@@ -132,6 +133,9 @@ final class FailoverOptionPropagationTest extends TestCase
     private function trackerOf(MemcachedClient $client): \PureCache\Internal\ServerFailureTracker
     {
         $core = (new \ReflectionMethod($client, 'state'))->invoke($client);
+        if (!$core instanceof ClientCoreState) {
+            throw new \LogicException('state() must return ClientCoreState');
+        }
 
         return $core->failureTracker;
     }

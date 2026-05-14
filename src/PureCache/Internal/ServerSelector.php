@@ -244,13 +244,17 @@ final class ServerSelector
         return $indices[$rng(\count($indices) - 1)];
     }
 
+    /**
+     * @param \Closure(int): int $walkToLive returns a usable server index, or {@code -1} when none is available
+     */
     private function resolveAvailability(int $idx, \Closure $walkToLive): ServerPick
     {
-        if (!$this->failureTracker instanceof ServerFailureTracker) {
+        $tracker = $this->failureTracker;
+        if (!$tracker instanceof ServerFailureTracker) {
             return new ServerPick($idx);
         }
 
-        $availability = $this->failureTracker->availability($idx);
+        $availability = $tracker->availability($idx);
 
         if (ServerAvailability::Ok === $availability || ServerAvailability::RetryDelayed === $availability) {
             return new ServerPick($idx, $availability);
@@ -261,7 +265,7 @@ final class ServerSelector
             return new ServerPick($idx, $availability);
         }
 
-        $altAvail = $this->failureTracker->availability($alternative);
+        $altAvail = $tracker->availability($alternative);
 
         return new ServerPick($alternative, $altAvail);
     }

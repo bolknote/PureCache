@@ -6,6 +6,7 @@ namespace PureCache\Tests\Unit\PureCache;
 
 use PHPUnit\Framework\TestCase;
 use PureCache\Memcached\Internal\ConnectionManager;
+use PureCache\Memcached\Internal\MemcachedClientCore;
 use PureCache\Memcached\MemcachedClient;
 
 /**
@@ -78,6 +79,9 @@ final class MemcachedTransportOptionsTest extends TestCase
     private function connectionManagerOf(MemcachedClient $client): ConnectionManager
     {
         $core = (new \ReflectionMethod($client, 'state'))->invoke($client);
+        if (!$core instanceof MemcachedClientCore) {
+            throw new \LogicException('state() must return MemcachedClientCore');
+        }
 
         return $core->conn;
     }

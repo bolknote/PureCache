@@ -240,7 +240,14 @@ final class StreamConnection
 
         // PHP 8.5+ exposes TCP_CORK as a named constant on Linux builds;
         // older versions still respect the bare integer.
-        $cork = \defined('TCP_CORK') ? \TCP_CORK : 3;
+        $cork = 3;
+        if (\defined('TCP_CORK')) {
+            $defined = \TCP_CORK;
+            if (\is_int($defined)) {
+                $cork = $defined;
+            }
+        }
+
         @socket_set_option($socket, \SOL_TCP, $cork, 1);
     }
 

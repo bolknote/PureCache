@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PureCache\Tests\Unit\PureCache;
 
 use PHPUnit\Framework\TestCase;
+use PureCache\Internal\ClientCoreState;
 use PureCache\Memcached\MemcachedClient;
 use PureCache\MemcachedConstants;
 
@@ -183,9 +184,7 @@ final class ReplicaFanoutTest extends TestCase
         $client->setOption(MemcachedClient::OPT_NUMBER_OF_REPLICAS, 2);
 
         $targets = $this->callFanoutTargets($client, null, 'multi-key');
-        self::assertIsArray($targets);
-        self::assertArrayHasKey('primary', $targets);
-        self::assertArrayHasKey('replicas', $targets);
+        self::assertNotNull($targets);
         self::assertCount(2, $targets['replicas']);
 
         $all = [$targets['primary'], ...$targets['replicas']];
@@ -250,6 +249,10 @@ final class ReplicaFanoutTest extends TestCase
         $client->setOption(MemcachedClient::OPT_REMOVE_FAILED_SERVERS, true);
 
         $core = (new \ReflectionMethod($client, 'state'))->invoke($client);
+        if (!$core instanceof ClientCoreState) {
+            throw new \LogicException('state() must return ClientCoreState');
+        }
+
         $core->failureTracker->recordFailure(1);
 
         $touched = [];
@@ -265,20 +268,48 @@ final class ReplicaFanoutTest extends TestCase
         self::assertArrayNotHasKey(1, $touched, 'dead server must never receive a fan-out copy');
     }
 
+    /**
+     * @return array{primary: int, replicas: list<int>}|null
+     */
     private function callFanoutTargets(MemcachedClient $client, ?string $serverKey, string $key): ?array
     {
         $rc = new \ReflectionMethod($client, 'fanoutTargets');
         $result = $rc->invoke($client, $serverKey, $key);
-        \assert(null === $result || \is_array($result));
+        if (null === $result) {
+            return null;
+        }
 
-        return $result;
+        if (!\is_array($result)) {
+            throw new \LogicException('fanoutTargets() must return array|null');
+        }
+
+        $primary = $result['primary'] ?? null;
+        $replicas = $result['replicas'] ?? null;
+        if (!\is_int($primary) || !\is_array($replicas)) {
+            throw new \LogicException('fanoutTargets() must return array{primary:int, replicas:list<int>}');
+        }
+
+        $validatedReplicas = [];
+        foreach ($replicas as $idx) {
+            if (!\is_int($idx)) {
+                throw new \LogicException('fanoutTargets() replicas must contain ints');
+            }
+
+            $validatedReplicas[] = $idx;
+        }
+
+        return ['primary' => $primary, 'replicas' => $validatedReplicas];
     }
 
     private function callRetryStore(MemcachedClient $client, ?string $serverKey, string $key, \Closure $writer): bool
     {
         $rc = new \ReflectionMethod($client, 'retryStoreOnFailure');
+        $result = $rc->invoke($client, $serverKey, $key, $writer);
+        if (!\is_bool($result)) {
+            throw new \LogicException('retryStoreOnFailure() must return bool');
+        }
 
-        return (bool) $rc->invoke($client, $serverKey, $key, $writer);
+        return $result;
     }
 
     private function newClientWithThreeServers(): MemcachedClient
@@ -294,21 +325,33 @@ final class ReplicaFanoutTest extends TestCase
     private function callWriteFanout(MemcachedClient $client, ?string $serverKey, string $key, \Closure $writer): bool
     {
         $rc = new \ReflectionMethod($client, 'writeFanout');
+        $result = $rc->invoke($client, $serverKey, $key, $writer);
+        if (!\is_bool($result)) {
+            throw new \LogicException('writeFanout() must return bool');
+        }
 
-        return (bool) $rc->invoke($client, $serverKey, $key, $writer);
+        return $result;
     }
 
     private function callPickRead(MemcachedClient $client, ?string $serverKey, string $key): int
     {
         $rc = new \ReflectionMethod($client, 'pickReadServerIndex');
+        $result = $rc->invoke($client, $serverKey, $key);
+        if (!\is_int($result)) {
+            throw new \LogicException('pickReadServerIndex() must return int');
+        }
 
-        return (int) $rc->invoke($client, $serverKey, $key);
+        return $result;
     }
 
     private function callPickServer(MemcachedClient $client, ?string $serverKey, string $key): int
     {
         $rc = new \ReflectionMethod($client, 'pickServerIndex');
+        $result = $rc->invoke($client, $serverKey, $key);
+        if (!\is_int($result)) {
+            throw new \LogicException('pickServerIndex() must return int');
+        }
 
-        return (int) $rc->invoke($client, $serverKey, $key);
+        return $result;
     }
 }

@@ -1272,7 +1272,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         }
 
         $primaryIdx = $indices[0];
-        $primaryOk = (bool) $writer($primaryIdx);
+        $primaryOk = $writer($primaryIdx);
         if ($primaryOk) {
             $this->recordServerSuccess($primaryIdx);
         }
@@ -1283,7 +1283,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         for ($i = 1, $n = \count($indices); $i < $n; ++$i) {
             $replicaIdx = $indices[$i];
             try {
-                $replicaOk = (bool) $writer($replicaIdx);
+                $replicaOk = $writer($replicaIdx);
                 if ($replicaOk) {
                     $this->recordServerSuccess($replicaIdx);
                 }

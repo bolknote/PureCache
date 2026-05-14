@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PureCache\Tests\Unit\PureCache;
 
 use PHPUnit\Framework\TestCase;
+use PureCache\Internal\ClientCoreState;
 use PureCache\Internal\ServerAvailability;
 use PureCache\Internal\ServerFailureTracker;
 use PureCache\Memcached\Internal\TimeoutException;
@@ -97,6 +98,9 @@ final class RecordServerFailureTest extends TestCase
         $client->addServer('10.0.0.0', 11211);
 
         $core = (new \ReflectionMethod($client, 'state'))->invoke($client);
+        if (!$core instanceof ClientCoreState) {
+            throw new \LogicException('state() must return ClientCoreState');
+        }
 
         return [$client, $core->failureTracker];
     }
