@@ -50,6 +50,57 @@ abstract class ClientCoreState
         $this->resultMessage = '';
     }
 
+    /**
+     * Layers {@code memcached.*} php.ini defaults on top of {@see ClientOptions::defaults()},
+     * exactly as PECL's constructor does in {@code php_memcached.c} around lines 1351-1392
+     * (instance fields are seeded from {@code MEMC_G(...)}, then
+     * {@code default_behavior.*} feeds through to {@code memcached_behavior_set()}).
+     *
+     * Only call this from the Memcached backend — Redis and Ignite have no
+     * documented INI surface and must not be affected by ext-memcached settings.
+     *
+     * @param array{
+     *   serializer:int,
+     *   compression_type:int,
+     *   compression_level:int,
+     *   compression_threshold:int,
+     *   compression_factor:float,
+     *   store_retry_count:int,
+     *   item_size_limit:int,
+     *   default_consistent_hash:bool,
+     *   default_binary_protocol:bool,
+     *   default_connect_timeout:int,
+     * } $snapshot
+     */
+    public function applyIniDefaults(array $snapshot): void
+    {
+        $this->options[MemcachedConstants::OPT_SERIALIZER] = $snapshot['serializer'];
+        $this->options[MemcachedConstants::OPT_COMPRESSION_TYPE] = $snapshot['compression_type'];
+        $this->options[MemcachedConstants::OPT_COMPRESSION_LEVEL] = $snapshot['compression_level'];
+        $this->options[MemcachedConstants::OPT_STORE_RETRY_COUNT] = $snapshot['store_retry_count'];
+        $this->options[MemcachedConstants::OPT_ITEM_SIZE_LIMIT] = $snapshot['item_size_limit'];
+
+        $this->compressionThreshold = $snapshot['compression_threshold'];
+        $this->compressionFactor = $snapshot['compression_factor'];
+
+        if ($snapshot['default_consistent_hash']) {
+            $this->options[MemcachedConstants::OPT_DISTRIBUTION] = MemcachedConstants::DISTRIBUTION_CONSISTENT;
+            $this->selector->setDistribution(MemcachedConstants::DISTRIBUTION_CONSISTENT);
+        }
+
+        if ($snapshot['default_binary_protocol']) {
+            $this->options[MemcachedConstants::OPT_BINARY_PROTOCOL] = true;
+            trigger_error(
+                'memcached.default_binary_protocol=On is ignored: PureCache speaks the meta protocol exclusively',
+                \E_USER_WARNING,
+            );
+        }
+
+        if (0 !== $snapshot['default_connect_timeout']) {
+            $this->options[MemcachedConstants::OPT_CONNECT_TIMEOUT] = $snapshot['default_connect_timeout'];
+        }
+    }
+
     public function optionInt(int $option, int $default): int
     {
         $value = $this->options[$option] ?? $default;

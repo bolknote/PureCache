@@ -326,7 +326,7 @@ abstract class MemcachedConstants
 
     public const bool HAVE_ENCODING = false;
 
-    public const bool HAVE_SESSION = false;
+    public const bool HAVE_SESSION = true;
 
     public const bool HAVE_SASL = false;
 

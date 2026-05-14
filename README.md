@@ -135,6 +135,74 @@ $m = new Memcached(); // only when PECL is not loaded; otherwise this is the ext
 
 Prefer importing constants from `PureCache\MemcachedConstants` in application code so you do not depend on whether the shim was loaded.
 
+## `php.ini` directives
+
+The memcached backend reads every `memcached.*` `php.ini` directive that the PECL extension registers in `php_memcached.c`, with the same defaults and the same `OnUpdate*` validators. Reading happens at `MemcachedClient` construction time (PECL parity — `MEMC_G(...)` is sampled once per `new Memcached()` call), so `ini_set('memcached.serializer', 'json')` followed by `new MemcachedClient()` produces an instance whose `OPT_SERIALIZER` is `SERIALIZER_JSON`.
+
+Per-instance directives (read on every `new MemcachedClient()`):
+
+| Directive | Default | Mapped to | Notes |
+| --- | --- | --- | --- |
+| `memcached.serializer` | `igbinary` → `msgpack` → `php` | `OPT_SERIALIZER` | Invalid values trigger `E_USER_WARNING` and fall back to the runtime default (same as PECL). |
+| `memcached.compression_type` | `fastlz` | `OPT_COMPRESSION_TYPE` | Accepted: `fastlz`, `zlib`, `zstd`. Anything else warns and falls back to `fastlz`. |
+| `memcached.compression_level` | `3` | `OPT_COMPRESSION_LEVEL` | |
+| `memcached.compression_threshold` | `2000` | `ClientCoreState::$compressionThreshold` (not exposed via `setOption()` in PECL either) | Values smaller than the threshold are never compressed even when `OPT_COMPRESSION = true`. |
+| `memcached.compression_factor` | `1.3` | `ClientCoreState::$compressionFactor` (INI-only in PECL) | Compressed payload is only kept when `plain_len > compressed_len * factor`. |
+| `memcached.store_retry_count` | `0` | `OPT_STORE_RETRY_COUNT` | Stored on the client; the pure-PHP store path does not implement automatic fail-over yet. |
+| `memcached.item_size_limit` | `0` | `OPT_ITEM_SIZE_LIMIT` | Pre-network check that mirrors PECL's `RES_E2BIG`. |
+| `memcached.default_consistent_hash` | `Off` | `OPT_DISTRIBUTION = DISTRIBUTION_CONSISTENT` when On | Applied via the same code path PECL uses (`memcached_behavior_set(DISTRIBUTION_CONSISTENT)`). |
+| `memcached.default_binary_protocol` | `Off` | `OPT_BINARY_PROTOCOL` (write-through), warning emitted when On | Pure-PHP transport speaks the meta protocol only; the warning matches PECL's `failed to set memcached behavior` shape. |
+| `memcached.default_connect_timeout` | `0` | `OPT_CONNECT_TIMEOUT` | Applied only when non-zero, mirroring PECL. |
+
+Session directives (read by `PureCache\Memcached\Session\MemcachedSessionHandler::open()`):
+
+| Directive | Default | Notes |
+| --- | --- | --- |
+| `memcached.sess_locking` | `On` | When enabled, `read()` acquires `lock.{sid}` via `add` with exponential backoff. |
+| `memcached.sess_lock_wait_min` / `memcached.sess_lock_wait_max` | `150` ms / `150` ms | Backoff starts at `wait_min`, doubles up to `wait_max` between retries. |
+| `memcached.sess_lock_retries` | `5` | Initial attempt + N retries before giving up. |
+| `memcached.sess_lock_expire` | `0` (falls back to `max_execution_time`) | TTL of the lock entry. |
+| `memcached.sess_binary_protocol` | `On` | Recognised and validated, but the wire stays meta. One-shot `E_USER_WARNING` per process when On (matches PECL's "failed to set behavior" diagnostic). Old alias `memcached.sess_binary` is honored when the new key is unset. |
+| `memcached.sess_consistent_hash` | `On` | Toggles `OPT_DISTRIBUTION = DISTRIBUTION_CONSISTENT` + `OPT_LIBKETAMA_COMPATIBLE`. |
+| `memcached.sess_consistent_hash_type` | `ketama` | Accepts `ketama` or `ketama_weighted`; anything else warns and falls back to `ketama`. |
+| `memcached.sess_number_of_replicas` | `0` | Used for the write-retry formula even though the meta transport has no native replica support. |
+| `memcached.sess_randomize_replica_read` | `Off` | Set on the client for `getOption()` introspection; the meta transport does not honor it. |
+| `memcached.sess_remove_failed_servers` | `Off` | When On, `write()` retries `1 + replicas * (failure_limit + 1)` times — same formula PECL uses. |
+| `memcached.sess_server_failure_limit` | `0` | Feeds the write-retry formula above. |
+| `memcached.sess_connect_timeout` | `0` ms | Applied via `OPT_CONNECT_TIMEOUT` when non-zero. |
+| `memcached.sess_sasl_username` / `memcached.sess_sasl_password` | empty | Setting either causes `open()` to fail with `failed to set memcached session sasl credentials` — same wording PECL emits when `memcached_set_sasl_auth_data` returns `MEMCACHED_FAILURE`. The pure-PHP transport has no binary handshake, so SASL credentials cannot be honored. |
+| `memcached.sess_persistent` | `Off` | When On, the underlying `MemcachedClient` is cached per `session.save_path` and reused on subsequent `open()` calls in the same process. |
+| `memcached.sess_prefix` | `memc.sess.key.` | Validated to be ≤ 218 bytes (PECL's `MEMCACHED_MAX_NS_LEN - 1`); applied via `OPT_PREFIX_KEY`. |
+| `memcached.sess_lock_wait` / `memcached.sess_lock_max_wait` | unset | Deprecated aliases; setting either triggers `E_USER_DEPRECATED` (same as PECL). |
+
+`memcached.use_sasl` is not implemented — PECL itself removed it in 3.0.
+
+## Session save handler
+
+`PureCache\Memcached\Session\MemcachedSessionHandler` is a userland clone of PECL's `memcached` session handler. Because PHP cannot route `session.save_handler = memcached` directly to a userland class, register the handler explicitly:
+
+```php
+use PureCache\Memcached\Session\MemcachedSessionHandler;
+
+ini_set('session.save_handler', 'user');
+ini_set('session.save_path', '127.0.0.1:11211');
+
+session_set_save_handler(new MemcachedSessionHandler(), true);
+session_start();
+```
+
+The handler implements `SessionHandlerInterface`, `SessionIdInterface`, and `SessionUpdateTimestampHandlerInterface`. It reproduces the PECL state machine 1:1:
+
+- `read()` acquires `lock.{sid}` via `add` with exponential backoff (`memcached.sess_lock_wait_min` → `lock_wait_max`, capped at `lock_retries` retries) before fetching the payload.
+- `write()` retries the underlying `set()` `1 + replicas * (failure_limit + 1)` times when `memcached.sess_remove_failed_servers` is enabled, otherwise once.
+- `destroy()` deletes the session key, then releases the lock with `delete(lock.{sid})`.
+- `read()` maps `RES_NOTFOUND` to an empty string the same way PECL's `PS_READ_FUNC` does.
+- TTLs use `session.gc_maxlifetime` (and `max_execution_time` for the lock if `memcached.sess_lock_expire = 0`), with the same ≤ 30-day relative / > 30-day absolute Unix-timestamp split memcached itself uses.
+
+If you want to supply your own backend (different host, custom `OPT_*` configuration, mocking in tests), pass any `PureCache\CacheClient` to the constructor: `new MemcachedSessionHandler($myClient)`. When no client is injected, the handler creates one from `session.save_path`.
+
+`memcached.sess_binary_protocol = On` and `memcached.sess_sasl_*` are recognised but cannot be honored — the pure-PHP transport speaks the meta protocol only and has no binary handshake for SASL. The handler emits a one-shot `E_USER_WARNING` for the binary case and refuses to `open()` when SASL credentials are configured, matching PECL's diagnostic wording.
+
 ## Redis backend notes
 
 - Item keys are stored under the `pm:v1:` prefix with a hash per logical memcached item (`HSET` fields `d`, `f`, `c`).

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PureCache\Memcached\Internal;
 
 use PureCache\Internal\ClientCoreState;
+use PureCache\Internal\IniConfig;
 use PureCache\MemcachedConstants;
 
 /**
@@ -23,6 +24,7 @@ final class MemcachedClientCore extends ClientCoreState
     {
         $c = new self();
         $c->initDefaults($persistentId);
+        $c->applyIniDefaults(IniConfig::snapshot());
         $c->rebuildConnectionManager();
 
         return $c;
