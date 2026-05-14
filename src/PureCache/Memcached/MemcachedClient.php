@@ -325,6 +325,15 @@ final class MemcachedClient extends AbstractCacheClient
     }
 
     /**
+     * Pipelined {@code setMulti} that honours {@code OPT_NUMBER_OF_REPLICAS}:
+     * for each key the prepared meta-set command is appended both to the
+     * primary's batch *and* to each replica's batch, then per-server batches
+     * are sent in one shot and drained sequentially. Only the primary slot
+     * decides the per-item outcome — replica failures (network or wire-level)
+     * are recorded against the failure tracker but never surface as
+     * {@code RES_SOME_ERRORS}, matching the single-key fan-out contract
+     * established by {@see writeFanout()}.
+     *
      * @param array<mixed> $items
      */
     #[\Override]
@@ -338,6 +347,7 @@ final class MemcachedClient extends AbstractCacheClient
         }
 
         $core = $this->core();
+        /** @var array<int, list<array{cmd: string, primary: bool}>> $batches */
         $batches = [];
         $ok = true;
         foreach ($items as $key => $value) {
@@ -348,42 +358,67 @@ final class MemcachedClient extends AbstractCacheClient
                 continue;
             }
 
-            $idx = $this->pickServerIndex($serverKey, $keyString);
-            $batches[$idx][] = $prepared;
-        }
-
-        $currentIdx = null;
-        try {
-            if (!$this->shouldBufferNoReplyWrite()) {
-                $this->flushNetworkWrites();
+            $targets = $this->fanoutTargets($serverKey, $keyString);
+            if (null === $targets) {
+                $ok = false;
+                continue;
             }
 
-            foreach ($batches as $serverIdx => $commands) {
-                $currentIdx = $serverIdx;
+            $batches[$targets['primary']][] = ['cmd' => $prepared, 'primary' => true];
+            foreach ($targets['replicas'] as $replicaIdx) {
+                $batches[$replicaIdx][] = ['cmd' => $prepared, 'primary' => false];
+            }
+        }
+
+        if (!$this->shouldBufferNoReplyWrite()) {
+            $this->flushNetworkWrites();
+        }
+
+        $fatalMessage = null;
+        foreach ($batches as $serverIdx => $entries) {
+            $hasPrimary = false;
+            foreach ($entries as $entry) {
+                if ($entry['primary']) {
+                    $hasPrimary = true;
+
+                    break;
+                }
+            }
+
+            try {
                 $c = $core->conn->get($serverIdx);
-                foreach ($commands as $cmd) {
-                    $this->send($c, $cmd);
+                foreach ($entries as $entry) {
+                    $this->send($c, $entry['cmd']);
                 }
 
                 if ($this->useNoReply()) {
+                    $this->recordServerSuccess($serverIdx);
+
                     continue;
                 }
 
                 $reader = new MetaReader($c);
-                foreach ($commands as $_) {
-                    if (!$this->storeSucceeded($reader->readOne(false))) {
+                foreach ($entries as $entry) {
+                    $storedOk = $this->storeSucceeded($reader->readOne(false));
+                    if ($entry['primary'] && !$storedOk) {
                         $ok = false;
                     }
                 }
+                $this->recordServerSuccess($serverIdx);
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($serverIdx, $throwable);
+                if ($hasPrimary) {
+                    $ok = false;
+                    $fatalMessage = $throwable->getMessage();
+                }
             }
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($currentIdx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
-
-            return false;
         }
 
-        $this->setResult($ok ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
+        if (null !== $fatalMessage) {
+            $this->setResult(self::RES_FAILURE, $fatalMessage);
+        } else {
+            $this->setResult($ok ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
+        }
 
         return $ok;
     }

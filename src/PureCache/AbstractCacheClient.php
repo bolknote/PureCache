@@ -1178,6 +1178,29 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     }
 
     /**
+     * Resolve the {@code [primary, replicas]} index pair for a single key
+     * under {@code OPT_NUMBER_OF_REPLICAS}. Returned in the shape that
+     * pipelined multi-writers want: a primary slot plus a list of extra
+     * replica slots, suitable for tagging each per-server batch entry as
+     * authoritative or best-effort. Returns {@code null} when the live
+     * server pool can't accommodate any write at all (mirrors what
+     * {@see writeFanout()} would report as {@code RES_NO_SERVERS}).
+     *
+     * @return array{primary: int, replicas: list<int>}|null
+     */
+    protected function fanoutTargets(?string $serverKey, string $key): ?array
+    {
+        $replicas = $this->optionInt(self::OPT_NUMBER_OF_REPLICAS, 0);
+        $routingKey = $serverKey ?? $this->routingKey($key);
+        $indices = $this->core->selector->pickReplicaIndices($routingKey, $replicas);
+        if ([] === $indices) {
+            return null;
+        }
+
+        return ['primary' => $indices[0], 'replicas' => \array_slice($indices, 1)];
+    }
+
+    /**
      * Fan-out a single write to the primary plus any {@code OPT_NUMBER_OF_REPLICAS}
      * additional servers. Replica failures are best-effort and never propagated
      * — the caller's outcome is whatever the primary returned, with its

@@ -303,10 +303,19 @@ final class RedisClient extends AbstractCacheClient
     /**
      * Pipelined {@code setMulti} via EVALSHA(LUA_CAS_SET) per-server: one TCP
      * write that batches all keys for the same Redis backend, then a single
-     * receive loop drains the replies. Falls back to the single-shot
-     * {@code doStore} path for any item whose value fails encoding (bad
-     * compression input, oversized payload, etc.) so PECL's RES_SOME_ERRORS
-     * semantics remain intact.
+     * receive loop drains the replies.
+     *
+     * Honours {@code OPT_NUMBER_OF_REPLICAS}: each key's prepared command is
+     * appended to the primary's batch *and* to each replica's batch, with the
+     * primary slot flagged so only its reply (or its server's transport error)
+     * influences {@code RES_SUCCESS}/{@code RES_SOME_ERRORS}. Replica failures
+     * are recorded against the failure tracker but never surface as
+     * {@code RES_SOME_ERRORS}, matching the single-key fan-out contract
+     * established by {@see writeFanout()}.
+     *
+     * Falls back to per-item error reporting for any item whose value fails
+     * encoding (bad compression input, oversized payload, etc.) so PECL's
+     * {@code RES_SOME_ERRORS} semantics remain intact.
      *
      * @param array<mixed> $items
      */
@@ -323,7 +332,7 @@ final class RedisClient extends AbstractCacheClient
         $ok = true;
         $st = $this->st();
 
-        /** @var array<int, list<array{cmd: list<string>, key: string}>> $byServer */
+        /** @var array<int, list<array{cmd: list<string>, key: string, primary: bool}>> $byServer */
         $byServer = [];
         foreach ($items as $key => $value) {
             $keyString = (string) $key;
@@ -359,47 +368,77 @@ final class RedisClient extends AbstractCacheClient
                 continue;
             }
 
-            $idx = $this->pickServerIndex($serverKey, $keyString);
+            $targets = $this->fanoutTargets($serverKey, $keyString);
+            if (null === $targets) {
+                $ok = false;
+                continue;
+            }
+
             $rk = $this->itemRedisKey($pk);
             $ttl = $this->ttlSeconds($expiration);
-
             $cmd = ['EVALSHA', sha1(RedisItemScripts::LUA_CAS_SET), '1', $rk, $payload, (string) $flags, (string) ($ttl ?? 0), ''];
-            $byServer[$idx][] = ['cmd' => $cmd, 'key' => $keyString];
+
+            $byServer[$targets['primary']][] = ['cmd' => $cmd, 'key' => $keyString, 'primary' => true];
+            foreach ($targets['replicas'] as $replicaIdx) {
+                $byServer[$replicaIdx][] = ['cmd' => $cmd, 'key' => $keyString, 'primary' => false];
+            }
         }
 
+        $fatalMessage = null;
         foreach ($byServer as $idx => $batch) {
+            $hasPrimary = false;
+            foreach ($batch as $entry) {
+                if ($entry['primary']) {
+                    $hasPrimary = true;
+
+                    break;
+                }
+            }
+
             try {
                 $redis = $this->redisForServerIndex($idx);
                 $commands = array_map(static fn (array $b): array => $b['cmd'], $batch);
                 $replies = $this->pipelineWithScriptFallback($redis, $commands, RedisItemScripts::LUA_CAS_SET);
 
-                foreach ($replies as $reply) {
+                foreach ($replies as $position => $reply) {
+                    $isPrimarySlot = $batch[$position]['primary'];
                     if ($reply instanceof \Throwable) {
-                        $this->setResult(self::RES_FAILURE, $reply->getMessage());
-                        $ok = false;
+                        if ($isPrimarySlot) {
+                            $this->setResult(self::RES_FAILURE, $reply->getMessage());
+                            $ok = false;
+                        }
                         continue;
                     }
 
                     try {
                         [$status] = RedisItemScripts::decodePairReply($reply);
                     } catch (\Throwable $throwable) {
-                        $this->setResult(self::RES_FAILURE, $throwable->getMessage());
-                        $ok = false;
+                        if ($isPrimarySlot) {
+                            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+                            $ok = false;
+                        }
                         continue;
                     }
 
-                    if (RedisItemScripts::STATUS_OK !== $status) {
+                    if ($isPrimarySlot && RedisItemScripts::STATUS_OK !== $status) {
                         $ok = false;
                     }
                 }
+                $this->recordServerSuccess($idx);
             } catch (\Throwable $throwable) {
                 $this->recordServerFailure($idx, $throwable);
-                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
-                $ok = false;
+                if ($hasPrimary) {
+                    $ok = false;
+                    $fatalMessage = $throwable->getMessage();
+                }
             }
         }
 
-        $this->setResult($ok ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
+        if (null !== $fatalMessage) {
+            $this->setResult(self::RES_FAILURE, $fatalMessage);
+        } else {
+            $this->setResult($ok ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
+        }
 
         return $ok;
     }

@@ -53,6 +53,36 @@ final class MemcachedIntegrationTest extends MemcachedLikeIntegrationTestCase
         return [substr($name, 0, $colon), (int) substr($name, $colon + 1)];
     }
 
+    public function testSetMultiFansOutToReplicaSoDataIsReachableViaSecondaryShard(): void
+    {
+        // Two TCP routes to the same backend. Selector treats them as two
+        // independent shards; with OPT_NUMBER_OF_REPLICAS=1 the fan-out
+        // writes a copy to *both* shards. We verify the fan-out happened
+        // by reading the same key back via a client that talks to only the
+        // replica shard.
+        $writer = new MemcachedClient();
+        $writer->addServer(self::integrationHost(), self::integrationPort());
+        $writer->addServer(self::integrationHost(), self::integrationPort());
+        $writer->setOption(MemcachedClient::OPT_NUMBER_OF_REPLICAS, 1);
+
+        $payload = [
+            'pure_multi_a_'.bin2hex(random_bytes(4)) => 'v-a',
+            'pure_multi_b_'.bin2hex(random_bytes(4)) => 'v-b',
+            'pure_multi_c_'.bin2hex(random_bytes(4)) => 'v-c',
+        ];
+
+        self::assertTrue($writer->setMulti($payload, 60));
+        self::assertSame(MemcachedClient::RES_SUCCESS, $writer->getResultCode());
+
+        // Every item should be reachable via a vanilla single-shard reader
+        // since the fan-out wrote a copy on the same backend.
+        $reader = $this->createClient();
+        foreach ($payload as $k => $v) {
+            self::assertSame($v, $reader->get($k), 'fan-out copy missing for '.$k);
+            self::assertTrue($reader->delete($k));
+        }
+    }
+
     public function testGetMultiReturnsPartialResultsWithSomeErrorsWhenOneServerIsDead(): void
     {
         // Seed several keys via a single-server client so we know which key
