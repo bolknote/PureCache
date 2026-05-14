@@ -10,6 +10,7 @@ use PureMemcached\Internal\ClientOptionApplier;
 use PureMemcached\Internal\KeyFormatter;
 use PureMemcached\Internal\MemcachedClientCore;
 use PureMemcached\Internal\MetaReader;
+use PureMemcached\Internal\MetaResult;
 use PureMemcached\Internal\MetaValueReader;
 use PureMemcached\Internal\StreamConnection;
 use PureMemcached\Internal\ValueCodec;
@@ -99,12 +100,12 @@ final class InternalComponentsTest extends TestCase
         fclose($server);
     }
 
-    public function testMetaValueReaderReturnsProtocolAndPayloadFailures(): void
+    public function testMetaValueReaderReturnsWireAndPayloadFailures(): void
     {
         [$protocolConnection, $protocolServer] = $this->socketConnection("CLIENT_ERROR bad meta\r\n");
         $protocol = MetaValueReader::read(new MetaReader($protocolConnection), MemcachedClient::SERIALIZER_PHP);
         self::assertTrue($protocol->isFailure());
-        self::assertSame(8, $protocol->errorCode);
+        self::assertSame(MemcachedClient::RES_CLIENT_ERROR, $protocol->errorCode);
         self::assertSame('bad meta', $protocol->errorMessage);
         fclose($protocolServer);
 
@@ -113,5 +114,29 @@ final class InternalComponentsTest extends TestCase
         self::assertTrue($payload->isFailure());
         self::assertSame(MemcachedClient::RES_PAYLOAD_FAILURE, $payload->errorCode);
         fclose($payloadServer);
+    }
+
+    public function testMetaReaderArithmeticAcceptsBareDecimalLine(): void
+    {
+        [$connection, $server] = $this->socketConnection("12\r\n");
+        $reader = new MetaReader($connection);
+        $r = $reader->readArithmeticValue();
+
+        self::assertSame('VA', $r->code);
+        self::assertSame('12', $r->value);
+        self::assertNull($r->errorMessage);
+        fclose($server);
+    }
+
+    public function testMetaReaderArithmeticStillParsesStandardVa(): void
+    {
+        [$connection, $server] = $this->socketConnection("VA 2 f0 c1 t60\r\n14\r\n");
+        $reader = new MetaReader($connection);
+        $r = $reader->readArithmeticValue();
+
+        self::assertSame('VA', $r->code);
+        self::assertSame('14', $r->value);
+        self::assertSame('1', $r->getToken('c'));
+        fclose($server);
     }
 }

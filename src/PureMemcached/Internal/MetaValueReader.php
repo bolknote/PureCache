@@ -14,8 +14,9 @@ final class MetaValueReader
     public static function read(MetaReader $reader, int $serializer): DecodedMetaValue
     {
         $result = $reader->readOne(true);
-        if (null !== $result->errorMessage) {
-            return DecodedMetaValue::failure(MemcachedConstants::RES_PROTOCOL_ERROR, $result->errorMessage);
+        $wire = $result->wireErrorResultCode();
+        if (null !== $wire) {
+            return DecodedMetaValue::failure($wire, $result->errorMessage);
         }
 
         if ('EN' === $result->code || 'NF' === $result->code) {

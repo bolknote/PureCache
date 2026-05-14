@@ -1199,6 +1199,10 @@ final class MemcachedClient extends MemcachedConstants
             return false;
         }
 
+        if ($this->applyMetaWireError($r)) {
+            return false;
+        }
+
         if ('HD' === $r->code) {
             $this->setResult(self::RES_SUCCESS);
 
@@ -1406,6 +1410,10 @@ final class MemcachedClient extends MemcachedConstants
             return false;
         }
 
+        if ($this->applyMetaWireError($r)) {
+            return false;
+        }
+
         if ('HD' === $r->code) {
             $this->setResult(self::RES_SUCCESS);
 
@@ -1555,6 +1563,10 @@ final class MemcachedClient extends MemcachedConstants
 
     private function storeSucceeded(MetaResult $result): bool
     {
+        if ($this->applyMetaWireError($result)) {
+            return false;
+        }
+
         if ('HD' === $result->code) {
             return true;
         }
@@ -1711,6 +1723,10 @@ final class MemcachedClient extends MemcachedConstants
             return false;
         }
 
+        if ($this->applyMetaWireError($r)) {
+            return false;
+        }
+
         if ('HD' === $r->code) {
             $this->setResult(self::RES_SUCCESS);
 
@@ -1813,6 +1829,10 @@ final class MemcachedClient extends MemcachedConstants
             return false;
         }
 
+        if ($this->applyMetaWireError($r)) {
+            return false;
+        }
+
         if ('VA' === $r->code && null !== $r->value) {
             $this->setResult(self::RES_SUCCESS);
 
@@ -1853,6 +1873,23 @@ final class MemcachedClient extends MemcachedConstants
         $out['flags'] = ValueCodec::getUserFlags($flags);
 
         return $out;
+    }
+
+    /**
+     * Map meta wire errors (CLIENT_ERROR / SERVER_ERROR / …) to PECL-style result codes.
+     *
+     * @return true if $r was a wire error (caller should treat the operation as failed)
+     */
+    private function applyMetaWireError(MetaResult $r): bool
+    {
+        $code = $r->wireErrorResultCode();
+        if (null === $code) {
+            return false;
+        }
+
+        $this->setResult($code, $r->errorMessage);
+
+        return true;
     }
 
     private function readDecodedMetaValue(MetaReader $reader): DecodedMetaValue|false

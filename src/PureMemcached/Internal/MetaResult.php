@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace PureMemcached\Internal;
 
+use PureMemcached\Client\MemcachedConstants;
+
 /**
  * One logical meta (or error) response from memcached.
  */
@@ -75,5 +77,31 @@ final readonly class MetaResult
         $f = $this->getToken('f');
 
         return null !== $f && '' !== $f ? (int) $f : null;
+    }
+
+    /**
+     * When the server sent CLIENT_ERROR / SERVER_ERROR / ERROR or the line is otherwise invalid,
+     * returns the MemcachedClient result code to surface (PECL-compatible where constants exist).
+     * Returns null for normal meta codes (HD, VA, NF, …).
+     */
+    public function wireErrorResultCode(): ?int
+    {
+        if (null === $this->errorMessage) {
+            return null;
+        }
+
+        if (str_starts_with($this->code, 'SERVER_ERROR')) {
+            return MemcachedConstants::RES_SERVER_ERROR;
+        }
+
+        if (str_starts_with($this->code, 'CLIENT_ERROR')) {
+            return MemcachedConstants::RES_CLIENT_ERROR;
+        }
+
+        if ('ERROR' === $this->code) {
+            return MemcachedConstants::RES_FAILURE;
+        }
+
+        return MemcachedConstants::RES_PROTOCOL_ERROR;
     }
 }

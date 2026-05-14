@@ -58,6 +58,11 @@ final readonly class MetaReader
             return $r;
         }
 
+        // Memcached uses "VA <size> …\r\n" + value chunk; Dragonfly may return only the new counter as a decimal line.
+        if ('VA' !== $r->code && '' !== $r->code && (string) (int) $r->code === (string) $r->code) {
+            return new MetaResult('VA', [], $r->code);
+        }
+
         if ('VA' === $r->code) {
             $parts = preg_split('/\s+/', trim($line), -1, \PREG_SPLIT_NO_EMPTY);
             if (false === $parts) {
