@@ -192,6 +192,18 @@ final class ValueCodec
             $flags &= ~self::ENCRYPTED_AEAD;
         } elseif ($encoding instanceof EncodingContext && MemcachedConstants::ENCODING_MODE_LIBMEMCACHED === $encoding->mode) {
             $payload = PayloadEncryption::decrypt($payload, $encoding);
+            // libmemcached zero-pads every encrypted buffer to a 16-byte
+            // boundary and ships no out-of-band length, so the decrypted
+            // payload may carry up to 15 trailing NULs. For TYPE_STRING that
+            // padding is the documented libmemcached behaviour and we
+            // preserve it (real libmemcached clients see the same thing);
+            // for everything else (raw compressed frames, PHP/igbinary/json/
+            // msgpack serialization streams) the NULs are noise that breaks
+            // strict deserializers, so we strip them here, where we know the
+            // encoding artifact is the only source of trailing zeros.
+            if (self::TYPE_STRING !== self::getType($flags)) {
+                $payload = rtrim($payload, "\0");
+            }
         }
 
         if (self::hasCompression($flags)) {

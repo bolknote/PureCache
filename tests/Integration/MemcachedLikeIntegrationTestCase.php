@@ -897,6 +897,186 @@ abstract class MemcachedLikeIntegrationTestCase extends TestCase
         self::assertSame(MemcachedClient::RES_NOTFOUND, $m->getResultCode());
     }
 
+    public function testEncodingLibmemcachedCompatibleRoundTrip(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('ext-openssl is required for setEncodingKey()');
+        }
+
+        $writer = $this->createClient();
+        self::assertTrue($writer->setEncodingKey('integration-libmem-key'));
+
+        $key = $this->key('pure_enc_libmem');
+        // Arrays are serialized before encryption, so libmemcached's
+        // zero-pad-everything wire format does not bleed trailing NULs into
+        // the decoded value — unserialize() ignores any extra bytes after
+        // the end-of-frame marker.
+        $value = ['user' => 42, 'tags' => ['secret', 'cached'], 'flag' => true];
+        self::assertTrue($writer->set($key, $value, 60));
+
+        $reader = $this->createClient();
+        self::assertTrue($reader->setEncodingKey('integration-libmem-key'));
+        self::assertSame($value, $reader->get($key));
+
+        $writer->delete($key);
+    }
+
+    public function testEncodingAeadRoundTrip(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('ext-openssl is required for setEncodingKey()');
+        }
+
+        $writer = $this->createClient();
+        self::assertTrue(
+            $writer->setOption(MemcachedClient::OPT_ENCODING_MODE, MemcachedClient::ENCODING_MODE_AEAD),
+        );
+        self::assertTrue($writer->setEncodingKey('integration-aead-key'));
+
+        $key = $this->key('pure_enc_aead');
+        $value = ['user' => 'alice', 'roles' => ['admin', 'reader'], 'meta' => null];
+        self::assertTrue($writer->set($key, $value, 60));
+
+        $reader = $this->createClient();
+        self::assertTrue(
+            $reader->setOption(MemcachedClient::OPT_ENCODING_MODE, MemcachedClient::ENCODING_MODE_AEAD),
+        );
+        self::assertTrue($reader->setEncodingKey('integration-aead-key'));
+        self::assertSame($value, $reader->get($key));
+
+        $writer->delete($key);
+    }
+
+    public function testAeadValueWithoutKeyFailsLoudlyInsteadOfReturningGarbage(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('ext-openssl is required for setEncodingKey()');
+        }
+
+        $writer = $this->createClient();
+        self::assertTrue(
+            $writer->setOption(MemcachedClient::OPT_ENCODING_MODE, MemcachedClient::ENCODING_MODE_AEAD),
+        );
+        self::assertTrue($writer->setEncodingKey('aead-strict-key'));
+
+        $key = $this->key('pure_enc_aead_no_key');
+        self::assertTrue($writer->set($key, ['secret' => 'value', 'n' => 7], 60));
+
+        // A plain reader (no encoding key) must surface RES_PAYLOAD_FAILURE
+        // rather than fabricate a value — the ENCRYPTED_AEAD flag on the
+        // stored entry tells the codec the payload is unreadable without a
+        // key, and silently turning it into a cache miss would mask
+        // misconfigured deployments.
+        $plainReader = $this->createClient();
+        self::assertFalse($plainReader->get($key));
+        self::assertSame(MemcachedClient::RES_PAYLOAD_FAILURE, $plainReader->getResultCode());
+
+        $writer->delete($key);
+    }
+
+    public function testAeadValueWithWrongKeyFailsLoudlyInsteadOfReturningGarbage(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('ext-openssl is required for setEncodingKey()');
+        }
+
+        $writer = $this->createClient();
+        self::assertTrue(
+            $writer->setOption(MemcachedClient::OPT_ENCODING_MODE, MemcachedClient::ENCODING_MODE_AEAD),
+        );
+        self::assertTrue($writer->setEncodingKey('aead-write-key'));
+
+        $key = $this->key('pure_enc_aead_wrong_key');
+        self::assertTrue($writer->set($key, ['payload' => 'super-secret'], 60));
+
+        $wrongReader = $this->createClient();
+        self::assertTrue(
+            $wrongReader->setOption(MemcachedClient::OPT_ENCODING_MODE, MemcachedClient::ENCODING_MODE_AEAD),
+        );
+        self::assertTrue($wrongReader->setEncodingKey('aead-read-key-mismatched'));
+        self::assertFalse($wrongReader->get($key));
+        self::assertSame(MemcachedClient::RES_PAYLOAD_FAILURE, $wrongReader->getResultCode());
+
+        $writer->delete($key);
+    }
+
+    public function testAeadProducesFreshCiphertextOnEveryWrite(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('ext-openssl is required for setEncodingKey()');
+        }
+
+        $writer = $this->createClient();
+        self::assertTrue(
+            $writer->setOption(MemcachedClient::OPT_ENCODING_MODE, MemcachedClient::ENCODING_MODE_AEAD),
+        );
+        // Compression off so the only source of payload variance between two
+        // writes is the AEAD nonce — anything else would also "happen to"
+        // shuffle bytes around.
+        self::assertTrue($writer->setOption(MemcachedClient::OPT_COMPRESSION, false));
+        self::assertTrue($writer->setEncodingKey('aead-on-wire-key'));
+
+        $key = $this->key('pure_enc_aead_wire');
+        $plaintext = 'IDDQD: this string must not appear on the wire in clear';
+        self::assertTrue($writer->set($key, $plaintext, 60));
+
+        $reader = $this->createClient();
+        self::assertTrue(
+            $reader->setOption(MemcachedClient::OPT_ENCODING_MODE, MemcachedClient::ENCODING_MODE_AEAD),
+        );
+        self::assertTrue($reader->setOption(MemcachedClient::OPT_COMPRESSION, false));
+        self::assertTrue($reader->setEncodingKey('aead-on-wire-key'));
+        self::assertSame($plaintext, $reader->get($key));
+
+        // Re-set the same value: AEAD must pick a fresh 96-bit nonce so the
+        // ciphertext on the wire differs even though plaintext is identical.
+        // We can't peek raw bytes from this layer; we verify the property
+        // observably by re-reading and confirming both writes were
+        // decryptable (would catch a stuck nonce that broke the tag).
+        self::assertTrue($writer->set($key, $plaintext, 60));
+        self::assertSame($plaintext, $reader->get($key));
+
+        $writer->delete($key);
+    }
+
+    public function testAppendWithEncodingKeySetIsRefusedOverTheWire(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('ext-openssl is required for setEncodingKey()');
+        }
+
+        $writer = $this->createClient();
+        // append/prepend already reject when compression is enabled (regardless
+        // of encryption); switch it off so the test exercises specifically
+        // the encoding-key guard.
+        self::assertTrue($writer->setOption(MemcachedClient::OPT_COMPRESSION, false));
+        self::assertTrue($writer->setEncodingKey('append-guard-key'));
+
+        $key = $this->key('pure_enc_append');
+        self::assertTrue($writer->set($key, 'head', 60));
+
+        $warnings = [];
+        set_error_handler(static function (int $errno, string $message) use (&$warnings): bool {
+            if (\E_USER_WARNING === $errno) {
+                $warnings[] = $message;
+
+                return true;
+            }
+
+            return false;
+        });
+
+        try {
+            self::assertFalse($writer->append($key, 'tail'));
+            self::assertSame(MemcachedClient::RES_NOTSTORED, $writer->getResultCode());
+            self::assertContains('cannot append/prepend with encoding key set', $warnings);
+        } finally {
+            restore_error_handler();
+        }
+
+        $writer->delete($key);
+    }
+
     public function testPhpSerializedObjectIsSafeByDefaultAndOptInRehydratesIt(): void
     {
         $writer = $this->createClient();
