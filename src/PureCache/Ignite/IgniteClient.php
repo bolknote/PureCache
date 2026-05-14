@@ -7,7 +7,6 @@ namespace PureCache\Ignite;
 use PureCache\AbstractCacheClient;
 use PureCache\Ignite\Internal\IgniteCacheCodec;
 use PureCache\Internal\CacheEntry;
-use PureCache\Internal\EncodingContext;
 use PureCache\Internal\PersistentStateRegistry;
 use PureCache\Internal\StoreMode;
 use PureCache\Internal\ValueCodec;
@@ -226,17 +225,7 @@ final class IgniteClient extends AbstractCacheClient
     protected function doStore(string $key, mixed $value, int $expiration, StoreMode $mode, ?string $serverKey, ?string $casToken): bool
     {
         $this->pristine = false;
-        if ($mode->isConcatenation() && $this->optionBool(self::OPT_COMPRESSION, true)) {
-            trigger_error('cannot append/prepend with compression turned on', \E_USER_WARNING);
-            $this->setResult(self::RES_NOTSTORED);
-
-            return false;
-        }
-
-        if ($mode->isConcatenation() && $this->encodingContext() instanceof EncodingContext) {
-            trigger_error('cannot append/prepend with encoding key set', \E_USER_WARNING);
-            $this->setResult(self::RES_NOTSTORED);
-
+        if (!$this->rejectIncompatibleConcatenation($mode)) {
             return false;
         }
 
@@ -255,20 +244,12 @@ final class IgniteClient extends AbstractCacheClient
             return $this->storeAppendOrPrepend($pk, $value, $mode, $serverKey, $key);
         }
 
-        try {
-            [$payload, $flags] = $this->encodePayload($value);
-        } catch (\Throwable) {
-            $this->setResult(self::RES_PAYLOAD_FAILURE);
-
+        $encoded = $this->encodeForStore($value);
+        if (null === $encoded) {
             return false;
         }
 
-        $limit = $this->optionInt(self::OPT_ITEM_SIZE_LIMIT, 0);
-        if ($limit > 0 && \strlen($payload) > $limit) {
-            $this->setResult(self::RES_E2BIG);
-
-            return false;
-        }
+        [$payload, $flags] = $encoded;
 
         return $this->retryStoreOnFailure($serverKey, $key, function (int $idx) use ($pk, $payload, $flags, $mode, $casToken): bool {
             try {
@@ -333,29 +314,10 @@ final class IgniteClient extends AbstractCacheClient
     #[\Override]
     protected function doDelete(string $key, ?string $serverKey, int $time): bool
     {
-        // PECL parity: bad key wins over delete-time, delete-time wins over server pool.
-        $this->pristine = false;
-        $pk = $this->prefixedKey($key);
-        if (!$this->checkKeyInternal($pk) || (null !== $serverKey && !$this->checkKeyInternal($serverKey))) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
-
-            return false;
-        }
-
-        if (!$this->acceptDeleteTime($time)) {
-            return false;
-        }
-
-        if (!$this->ensureServersAvailable()) {
-            return false;
-        }
-
-        return $this->writeFanout($serverKey, $key, function (int $idx) use ($pk): bool {
+        return $this->executeDelete($key, $serverKey, $time, fn (string $pk): bool => $this->writeFanout($serverKey, $key, function (int $idx) use ($pk): bool {
             try {
                 if (!$this->clientFor($idx)->cacheRemoveKey($this->cacheIdFor($idx), $pk)) {
-                    $this->setResult(self::RES_NOTFOUND);
-
-                    return false;
+                    return $this->failResult(self::RES_NOTFOUND);
                 }
             } catch (\Throwable $throwable) {
                 $this->recordServerFailure($idx, $throwable);
@@ -364,10 +326,8 @@ final class IgniteClient extends AbstractCacheClient
                 return false;
             }
 
-            $this->setResult(self::RES_SUCCESS);
-
-            return true;
-        });
+            return $this->okResult(self::RES_SUCCESS);
+        }));
     }
 
     #[\Override]
@@ -450,31 +410,15 @@ final class IgniteClient extends AbstractCacheClient
     #[\Override]
     protected function doGetStats(?string $type): array|false
     {
-        $st = $this->st();
-        if ([] === $st->selector->getServers()) {
-            $this->setResult(self::RES_NO_SERVERS);
-
+        if (!$this->ensureServersAvailable()) {
             return false;
         }
 
-        $out = [];
-        $ok = true;
-        foreach ($st->selector->getServers() as $i => $s) {
-            $label = $s['host'].':'.$s['port'];
-            try {
-                $client = $this->clientFor($i);
-                $cacheId = $this->cacheIdFor($i);
-                $out[$label] = $this->buildStats($client, $cacheId, $type);
-            } catch (\Throwable $throwable) {
-                $this->recordServerFailure($i, $throwable);
-                $ok = false;
-                $out[$label] = false;
-            }
-        }
+        $result = $this->collectFromServers(fn (int $i): array => $this->buildStats($this->clientFor($i), $this->cacheIdFor($i), $type), false);
 
-        $this->setResult($ok ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
+        $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
 
-        return $out;
+        return $result['values'];
     }
 
     /**
@@ -483,38 +427,21 @@ final class IgniteClient extends AbstractCacheClient
     #[\Override]
     protected function doGetVersion(): array|false
     {
-        $st = $this->st();
-        if ([] === $st->selector->getServers()) {
-            $this->setResult(self::RES_NO_SERVERS);
-
+        if (!$this->ensureServersAvailable()) {
             return false;
         }
 
-        $out = [];
-        $ok = true;
-        foreach ($st->selector->getServers() as $i => $s) {
-            $label = $s['host'].':'.$s['port'];
-            try {
-                $out[$label] = $this->clientFor($i)->getServerVersion();
-            } catch (\Throwable $throwable) {
-                $this->recordServerFailure($i, $throwable);
-                $ok = false;
-                $out[$label] = '';
-            }
-        }
+        $result = $this->collectFromServers(fn (int $i): string => $this->clientFor($i)->getServerVersion(), '');
 
-        $this->setResult($ok ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
+        $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
 
-        return $out;
+        return $result['values'];
     }
 
     #[\Override]
     protected function doFlush(int $delay): bool
     {
-        $st = $this->st();
-        if ([] === $st->selector->getServers()) {
-            $this->setResult(self::RES_NO_SERVERS);
-
+        if (!$this->ensureServersAvailable()) {
             return false;
         }
 
@@ -524,19 +451,15 @@ final class IgniteClient extends AbstractCacheClient
             return false;
         }
 
-        $ok = true;
-        foreach (array_keys($st->selector->getServers()) as $i) {
-            try {
-                $this->clientFor($i)->cacheClear($this->cacheIdFor($i));
-            } catch (\Throwable $throwable) {
-                $this->recordServerFailure($i, $throwable);
-                $ok = false;
-            }
-        }
+        $result = $this->collectFromServers(function (int $i): bool {
+            $this->clientFor($i)->cacheClear($this->cacheIdFor($i));
 
-        $this->setResult($ok ? self::RES_SUCCESS : self::RES_FAILURE);
+            return true;
+        }, false);
 
-        return $ok;
+        $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_FAILURE);
+
+        return $result['allOk'];
     }
 
     /**
@@ -545,38 +468,26 @@ final class IgniteClient extends AbstractCacheClient
     #[\Override]
     protected function doGetAllKeys(): array|false
     {
-        $st = $this->st();
-        if ([] === $st->selector->getServers()) {
-            $this->setResult(self::RES_NO_SERVERS);
-
+        if (!$this->ensureServersAvailable()) {
             return false;
         }
 
-        $keys = [];
-        $ok = true;
-        $hadSuccess = false;
-        foreach (array_keys($st->selector->getServers()) as $i) {
-            try {
-                foreach ($this->clientFor($i)->cacheScanKeys($this->cacheIdFor($i)) as $key) {
-                    $keys[] = $key;
-                }
+        $result = $this->collectFromServers(fn (int $i): array => $this->clientFor($i)->cacheScanKeys($this->cacheIdFor($i)), []);
 
-                $hadSuccess = true;
-            } catch (\Throwable $throwable) {
-                $this->recordServerFailure($i, $throwable);
-                $ok = false;
-            }
-        }
-
-        if (!$ok && !$hadSuccess) {
+        if (!$result['allOk'] && !$result['anyOk']) {
             $this->setResult(self::RES_FAILURE);
 
             return false;
         }
 
-        $this->setResult($ok ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
+        $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
 
-        return array_values(array_unique($keys));
+        $merged = [];
+        foreach ($result['values'] as $list) {
+            $merged = array_merge($merged, $list);
+        }
+
+        return array_values(array_unique($merged));
     }
 
     // -----------------------------------------------------------------------
@@ -772,7 +683,7 @@ final class IgniteClient extends AbstractCacheClient
             throw new \RuntimeException('invalid server index');
         }
 
-        $client = new NativeIgniteClient($server['host'], $server['port'], $this->readWriteTimeoutSeconds());
+        $client = new NativeIgniteClient($server['host'], $server['port'], $this->recvSendTimeoutSeconds());
         $client->connect();
         $st->clientByServerIndex[$serverIndex] = $client;
 
@@ -792,15 +703,6 @@ final class IgniteClient extends AbstractCacheClient
         return $cacheId;
     }
 
-    private function readWriteTimeoutSeconds(): float
-    {
-        $recv = $this->optionInt(self::OPT_RECV_TIMEOUT, 0);
-        $send = $this->optionInt(self::OPT_SEND_TIMEOUT, 0);
-        $ms = max($recv, $send);
-
-        return $ms > 0 ? $ms / 1000.0 : 0.0;
-    }
-
     /**
      * Produce a positive 63-bit CAS token. Using {@code random_int} avoids the
      * cross-process collision risk of a local counter and keeps the value
@@ -810,26 +712,6 @@ final class IgniteClient extends AbstractCacheClient
     private function randomCas(): int
     {
         return random_int(1, \PHP_INT_MAX);
-    }
-
-    /**
-     * @return array{0:string,1:int}
-     */
-    private function encodePayload(mixed $value): array
-    {
-        $st = $this->st();
-
-        return ValueCodec::encode(
-            $value,
-            $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
-            $this->optionBool(self::OPT_COMPRESSION, true),
-            $this->optionInt(self::OPT_COMPRESSION_TYPE, self::COMPRESSION_TYPE_FASTLZ),
-            $this->optionInt(self::OPT_COMPRESSION_LEVEL, 3),
-            $st->compressionThreshold,
-            $st->compressionFactor,
-            $this->optionInt(self::OPT_USER_FLAGS, -1),
-            $this->encodingContext(),
-        );
     }
 
     /**

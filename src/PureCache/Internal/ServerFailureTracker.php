@@ -49,7 +49,7 @@ final class ServerFailureTracker
     private bool $removeFailed = false;
 
     /** @var \Closure(): float */
-    private \Closure $clock;
+    private readonly \Closure $clock;
 
     /**
      * @param (\Closure(): float)|null $clock returns POSIX time in seconds (fractional). Defaults to {@see microtime(true)}

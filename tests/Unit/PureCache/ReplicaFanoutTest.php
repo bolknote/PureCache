@@ -24,7 +24,7 @@ final class ReplicaFanoutTest extends TestCase
         $client->setOption(MemcachedClient::OPT_NUMBER_OF_REPLICAS, 2);
 
         $hits = [];
-        $ok = $this->callWriteFanout($client, null, 'item-7', function (int $idx) use (&$hits): bool {
+        $ok = $this->callWriteFanout($client, null, 'item-7', static function (int $idx) use (&$hits): bool {
             $hits[] = $idx;
 
             return true;
@@ -41,7 +41,7 @@ final class ReplicaFanoutTest extends TestCase
         $client->setOption(MemcachedClient::OPT_NUMBER_OF_REPLICAS, 2);
 
         $calls = 0;
-        $ok = $this->callWriteFanout($client, null, 'item', function () use (&$calls): bool {
+        $ok = $this->callWriteFanout($client, null, 'item', static function () use (&$calls): bool {
             ++$calls;
             if ($calls >= 2) {
                 throw new \RuntimeException('replica down');
@@ -104,7 +104,7 @@ final class ReplicaFanoutTest extends TestCase
         $client = $this->newClientWithThreeServers();
 
         $calls = 0;
-        $ok = $this->callWriteFanout($client, null, 'item', function () use (&$calls): bool {
+        $ok = $this->callWriteFanout($client, null, 'item', static function () use (&$calls): bool {
             ++$calls;
 
             return true;
@@ -120,7 +120,7 @@ final class ReplicaFanoutTest extends TestCase
         $client->setOption(MemcachedClient::OPT_STORE_RETRY_COUNT, 2);
 
         $attempts = [];
-        $ok = $this->callRetryStore($client, null, 'item', function (int $idx) use ($client, &$attempts): bool {
+        $ok = $this->callRetryStore($client, null, 'item', static function (int $idx) use ($client, &$attempts): bool {
             $attempts[] = $idx;
             if (1 === \count($attempts)) {
                 // Pretend the primary failed catastrophically. Set RES_FAILURE
@@ -145,7 +145,7 @@ final class ReplicaFanoutTest extends TestCase
         $client->setOption(MemcachedClient::OPT_STORE_RETRY_COUNT, 5);
 
         $calls = 0;
-        $ok = $this->callRetryStore($client, null, 'item', function () use ($client, &$calls): bool {
+        $ok = $this->callRetryStore($client, null, 'item', static function () use ($client, &$calls): bool {
             ++$calls;
             $rc = new \ReflectionMethod($client, 'setResult');
             // RES_NOTSTORED is a legitimate add()/cas() response, not a
@@ -165,7 +165,7 @@ final class ReplicaFanoutTest extends TestCase
         $client->setOption(MemcachedClient::OPT_STORE_RETRY_COUNT, 1);
 
         $attempts = 0;
-        $ok = $this->callRetryStore($client, null, 'item', function () use ($client, &$attempts): bool {
+        $ok = $this->callRetryStore($client, null, 'item', static function () use ($client, &$attempts): bool {
             ++$attempts;
             $rc = new \ReflectionMethod($client, 'setResult');
             $rc->invoke($client, MemcachedConstants::RES_FAILURE, 'down');

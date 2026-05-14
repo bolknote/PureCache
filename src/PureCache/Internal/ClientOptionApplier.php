@@ -129,27 +129,31 @@ final class ClientOptionApplier
 
     private static function applyDistribution(ClientCoreState $core, int $option, mixed $value, OptionEnvironment $env): ClientOptionResult
     {
-        $distribution = ClientOptions::intValue($value);
-        if (null === $distribution) {
-            return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
-        }
-
-        $core->options[$option] = $distribution;
-        $core->selector->setDistribution($distribution);
-        $env->onPoolInvalidated();
-
-        return ClientOptionResult::success();
+        return self::applySelectorInt($core, $option, $value, $env, static fn (int $v) => $core->selector->setDistribution($v));
     }
 
     private static function applyHash(ClientCoreState $core, int $option, mixed $value, OptionEnvironment $env): ClientOptionResult
     {
-        $hash = ClientOptions::intValue($value);
-        if (null === $hash) {
+        return self::applySelectorInt($core, $option, $value, $env, static fn (int $v) => $core->selector->setHashOption($v));
+    }
+
+    /**
+     * Shared spine for option setters that simply forward a coerced integer
+     * value into the {@see ServerSelector} and then rebuild the connection
+     * pool. {@see applyDistribution()} and {@see applyHash()} differ only in
+     * which selector setter they call.
+     *
+     * @param \Closure(int): void $selectorSetter
+     */
+    private static function applySelectorInt(ClientCoreState $core, int $option, mixed $value, OptionEnvironment $env, \Closure $selectorSetter): ClientOptionResult
+    {
+        $integer = ClientOptions::intValue($value);
+        if (null === $integer) {
             return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
         }
 
-        $core->options[$option] = $hash;
-        $core->selector->setHashOption($hash);
+        $core->options[$option] = $integer;
+        $selectorSetter($integer);
         $env->onPoolInvalidated();
 
         return ClientOptionResult::success();

@@ -57,6 +57,7 @@ abstract class ClientCoreState
         $this->failureTracker = new ServerFailureTracker();
         $this->selector = new ServerSelector();
         $this->selector->setFailureTracker($this->failureTracker);
+
         $this->options = ClientOptions::defaults();
         $this->resultCode = MemcachedConstants::RES_SUCCESS;
         $this->resultMessage = '';

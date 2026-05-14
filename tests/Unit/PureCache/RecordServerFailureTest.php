@@ -95,6 +95,7 @@ final class RecordServerFailureTest extends TestCase
     {
         $client = new MemcachedClient();
         $client->addServer('10.0.0.0', 11211);
+
         $core = (new \ReflectionMethod($client, 'state'))->invoke($client);
 
         return [$client, $core->failureTracker];

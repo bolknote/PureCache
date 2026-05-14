@@ -79,6 +79,7 @@ final class ServerSelectorTest extends TestCase
         $tracker = new ServerFailureTracker();
         $selector->setFailureTracker($tracker);
         $selector->addServer(['host' => '127.0.0.1', 'port' => 11211, 'weight' => 1]);
+
         $tracker->setFailureLimit(2);
         $tracker->setRetryTimeoutSec(30);
         $tracker->recordFailure(0);

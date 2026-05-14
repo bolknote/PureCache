@@ -22,6 +22,7 @@ final class FailoverOptionPropagationTest extends TestCase
     {
         $client = new MemcachedClient();
         $client->addServer('10.0.0.0', 11211);
+
         $tracker = $this->trackerOf($client);
         $tracker->setDeadTimeoutSec(60);
 
@@ -41,6 +42,7 @@ final class FailoverOptionPropagationTest extends TestCase
     {
         $client = new MemcachedClient();
         $client->addServer('10.0.0.0', 11211);
+
         $tracker = $this->trackerOf($client);
         $tracker->setDeadTimeoutSec(60);
 

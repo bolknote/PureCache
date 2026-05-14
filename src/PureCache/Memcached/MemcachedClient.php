@@ -6,7 +6,6 @@ namespace PureCache\Memcached;
 
 use PureCache\AbstractCacheClient;
 use PureCache\Internal\CacheEntry;
-use PureCache\Internal\EncodingContext;
 use PureCache\Internal\PersistentStateRegistry;
 use PureCache\Internal\StoreMode;
 use PureCache\Internal\ValueCodec;
@@ -272,17 +271,7 @@ final class MemcachedClient extends AbstractCacheClient
     protected function doStore(string $key, mixed $value, int $expiration, StoreMode $mode, ?string $serverKey, ?string $casToken): bool
     {
         $this->pristine = false;
-        if ($mode->isConcatenation() && $this->optionBool(self::OPT_COMPRESSION, true)) {
-            trigger_error('cannot append/prepend with compression turned on', \E_USER_WARNING);
-            $this->setResult(self::RES_NOTSTORED);
-
-            return false;
-        }
-
-        if ($mode->isConcatenation() && $this->encodingContext() instanceof EncodingContext) {
-            trigger_error('cannot append/prepend with encoding key set', \E_USER_WARNING);
-            $this->setResult(self::RES_NOTSTORED);
-
+        if (!$this->rejectIncompatibleConcatenation($mode)) {
             return false;
         }
 
@@ -404,6 +393,7 @@ final class MemcachedClient extends AbstractCacheClient
                         $ok = false;
                     }
                 }
+
                 $this->recordServerSuccess($serverIdx);
             } catch (\Throwable $throwable) {
                 $this->recordServerFailure($serverIdx, $throwable);
@@ -449,59 +439,38 @@ final class MemcachedClient extends AbstractCacheClient
     #[\Override]
     protected function doDelete(string $key, ?string $serverKey, int $time): bool
     {
-        // PECL parity: `delete('bad key', 1)` reports RES_BAD_KEY_PROVIDED, but
-        // `delete('valid', 1)` with no servers configured still reports
-        // RES_NOT_SUPPORTED — i.e. key validation > delete-time validation > server pool.
-        // {@see executeKeyed()} would short-circuit on the empty pool first, so
-        // this method spells the order out manually.
-        $this->pristine = false;
-        $pk = $this->prefixedKey($key);
-        if (!$this->checkKeyInternal($pk) || (null !== $serverKey && !$this->checkKeyInternal($serverKey))) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
+        return $this->executeDelete($key, $serverKey, $time, function (string $pk) use ($serverKey, $key): bool {
+            if (!$this->shouldBufferNoReplyWrite()) {
+                $this->flushNetworkWrites();
+            }
 
-            return false;
-        }
+            return $this->writeFanout($serverKey, $key, function (int $idx) use ($pk): bool {
+                try {
+                    $c = $this->core()->conn->get($idx);
+                    $this->send($c, MetaCommandBuilder::metaDelete($pk, $this->useNoReply()));
+                    if ($this->useNoReply()) {
+                        return $this->okResult(self::RES_SUCCESS);
+                    }
 
-        if (!$this->acceptDeleteTime($time)) {
-            return false;
-        }
+                    $reader = new MetaReader($c);
+                    $r = $reader->readOne(false);
+                } catch (\Throwable $throwable) {
+                    $this->recordServerFailure($idx, $throwable);
+                    $this->setResult(self::RES_FAILURE, $throwable->getMessage());
 
-        if (!$this->ensureServersAvailable()) {
-            return false;
-        }
-
-        if (!$this->shouldBufferNoReplyWrite()) {
-            $this->flushNetworkWrites();
-        }
-
-        return $this->writeFanout($serverKey, $key, function (int $idx) use ($pk): bool {
-            try {
-                $c = $this->core()->conn->get($idx);
-                $this->send($c, MetaCommandBuilder::metaDelete($pk, $this->useNoReply()));
-                if ($this->useNoReply()) {
-                    $this->setResult(self::RES_SUCCESS);
-
-                    return true;
+                    return false;
                 }
 
-                $reader = new MetaReader($c);
-                $r = $reader->readOne(false);
-            } catch (\Throwable $throwable) {
-                $this->recordServerFailure($idx, $throwable);
-                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+                if ($this->applyMetaWireError($r)) {
+                    return false;
+                }
 
-                return false;
-            }
-
-            if ($this->applyMetaWireError($r)) {
-                return false;
-            }
-
-            return match ($r->code) {
-                'HD' => $this->okResult(self::RES_SUCCESS),
-                'NF' => $this->failResult(self::RES_NOTFOUND),
-                default => $this->failResult(self::RES_FAILURE),
-            };
+                return match ($r->code) {
+                    'HD' => $this->okResult(self::RES_SUCCESS),
+                    'NF' => $this->failResult(self::RES_NOTFOUND),
+                    default => $this->failResult(self::RES_FAILURE),
+                };
+            });
         });
     }
 
@@ -567,35 +536,20 @@ final class MemcachedClient extends AbstractCacheClient
     protected function doGetStats(?string $type): array|false
     {
         $this->flushNetworkWrites();
-        $core = $this->core();
-        if ([] === $core->selector->getServers()) {
-            $this->setResult(self::RES_NO_SERVERS);
-
+        if (!$this->ensureServersAvailable()) {
             return false;
         }
 
-        $out = [];
-        $ok = true;
-        foreach ($core->selector->getServers() as $i => $s) {
-            $label = $s['host'].':'.$s['port'];
-            try {
-                $c = $core->conn->get($i);
-                $st = TextProtocolClient::stats($c, $type);
-                if (false === $st) {
-                    $ok = false;
-                }
+        $core = $this->core();
+        $result = $this->collectFromServers(static function (int $i) use ($core, $type): array|null {
+            $st = TextProtocolClient::stats($core->conn->get($i), $type);
 
-                $out[$label] = $st;
-            } catch (\Throwable $exception) {
-                $this->recordServerFailure($i, $exception);
-                $ok = false;
-                $out[$label] = false;
-            }
-        }
+            return false === $st ? null : $st;
+        }, false);
 
-        $this->setResult($ok ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
+        $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
 
-        return $out;
+        return $result['values'];
     }
 
     /**
@@ -605,64 +559,36 @@ final class MemcachedClient extends AbstractCacheClient
     protected function doGetVersion(): array|false
     {
         $this->flushNetworkWrites();
-        $core = $this->core();
-        if ([] === $core->selector->getServers()) {
-            $this->setResult(self::RES_NO_SERVERS);
-
+        if (!$this->ensureServersAvailable()) {
             return false;
         }
 
-        $out = [];
-        $ok = true;
-        foreach ($core->selector->getServers() as $i => $s) {
-            $label = $s['host'].':'.$s['port'];
-            try {
-                $c = $core->conn->get($i);
-                $v = TextProtocolClient::version($c);
-                if (false === $v) {
-                    $ok = false;
-                }
+        $core = $this->core();
+        $result = $this->collectFromServers(static function (int $i) use ($core): ?string {
+            $v = TextProtocolClient::version($core->conn->get($i));
 
-                $out[$label] = false === $v ? '' : $v;
-            } catch (\Throwable $exception) {
-                $this->recordServerFailure($i, $exception);
-                $ok = false;
-                $out[$label] = '';
-            }
-        }
+            return false === $v ? null : $v;
+        }, '');
 
-        $this->setResult($ok ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
+        $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
 
-        return $out;
+        return $result['values'];
     }
 
     #[\Override]
     protected function doFlush(int $delay): bool
     {
         $this->flushNetworkWrites();
-        $core = $this->core();
-        if ([] === $core->selector->getServers()) {
-            $this->setResult(self::RES_NO_SERVERS);
-
+        if (!$this->ensureServersAvailable()) {
             return false;
         }
 
-        $ok = true;
-        foreach (array_keys($core->selector->getServers()) as $i) {
-            try {
-                $c = $core->conn->get($i);
-                if (!TextProtocolClient::flushAll($c, $delay)) {
-                    $ok = false;
-                }
-            } catch (\Throwable $exception) {
-                $this->recordServerFailure($i, $exception);
-                $ok = false;
-            }
-        }
+        $core = $this->core();
+        $result = $this->collectFromServers(static fn (int $i): ?bool => TextProtocolClient::flushAll($core->conn->get($i), $delay) ? true : null, false);
 
-        $this->setResult($ok ? self::RES_SUCCESS : self::RES_FAILURE);
+        $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_FAILURE);
 
-        return $ok;
+        return $result['allOk'];
     }
 
     /**
@@ -672,41 +598,31 @@ final class MemcachedClient extends AbstractCacheClient
     protected function doGetAllKeys(): array|false
     {
         $this->flushNetworkWrites();
-        $core = $this->core();
-        if ([] === $core->selector->getServers()) {
-            $this->setResult(self::RES_NO_SERVERS);
-
+        if (!$this->ensureServersAvailable()) {
             return false;
         }
 
-        $keys = [];
-        $ok = true;
-        $hadSuccess = false;
-        foreach (array_keys($core->selector->getServers()) as $i) {
-            try {
-                $c = $core->conn->get($i);
-                $k = TextProtocolClient::getAllKeys($c);
-                if (\is_array($k)) {
-                    $hadSuccess = true;
-                    $keys = array_merge($keys, $k);
-                } else {
-                    $ok = false;
-                }
-            } catch (\Throwable $exception) {
-                $this->recordServerFailure($i, $exception);
-                $ok = false;
-            }
-        }
+        $core = $this->core();
+        $result = $this->collectFromServers(static function (int $i) use ($core): ?array {
+            $k = TextProtocolClient::getAllKeys($core->conn->get($i));
 
-        if (!$ok && !$hadSuccess) {
+            return \is_array($k) ? $k : null;
+        }, []);
+
+        if (!$result['allOk'] && !$result['anyOk']) {
             $this->setResult(self::RES_FAILURE);
 
             return false;
         }
 
-        $this->setResult($ok ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
+        $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
 
-        return array_values(array_unique($keys));
+        $merged = [];
+        foreach ($result['values'] as $list) {
+            $merged = array_merge($merged, $list);
+        }
+
+        return array_values(array_unique($merged));
     }
 
     // -----------------------------------------------------------------------
@@ -715,31 +631,12 @@ final class MemcachedClient extends AbstractCacheClient
 
     private function prepareStoreCommand(string $key, mixed $value, int $expiration, StoreMode $mode, ?string $serverKey, ?string $casToken): string|false
     {
-        $core = $this->core();
-        try {
-            [$payload, $flags] = ValueCodec::encode(
-                $value,
-                $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
-                $this->optionBool(self::OPT_COMPRESSION, true),
-                $this->optionInt(self::OPT_COMPRESSION_TYPE, self::COMPRESSION_TYPE_FASTLZ),
-                $this->optionInt(self::OPT_COMPRESSION_LEVEL, 3),
-                $core->compressionThreshold,
-                $core->compressionFactor,
-                $this->optionInt(self::OPT_USER_FLAGS, -1),
-                $this->encodingContext(),
-            );
-        } catch (\Throwable) {
-            $this->setResult(self::RES_PAYLOAD_FAILURE);
-
+        $encoded = $this->encodeForStore($value);
+        if (null === $encoded) {
             return false;
         }
 
-        $limit = $this->optionInt(self::OPT_ITEM_SIZE_LIMIT, 0);
-        if ($limit > 0 && \strlen($payload) > $limit) {
-            $this->setResult(self::RES_E2BIG);
-
-            return false;
-        }
+        [$payload, $flags] = $encoded;
 
         $pk = $this->prefixedKey($key);
         if (!$this->checkKeyInternal($pk)) {
@@ -853,19 +750,5 @@ final class MemcachedClient extends AbstractCacheClient
         } else {
             $c->write($data);
         }
-    }
-
-    private function okResult(int $code): bool
-    {
-        $this->setResult($code);
-
-        return true;
-    }
-
-    private function failResult(int $code): bool
-    {
-        $this->setResult($code);
-
-        return false;
     }
 }

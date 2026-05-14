@@ -13,6 +13,7 @@ use PureCache\Internal\KeyFormatter;
 use PureCache\Internal\OptionEnvironment;
 use PureCache\Internal\ServerEndpoint;
 use PureCache\Internal\StoreMode;
+use PureCache\Internal\ValueCodec;
 use PureCache\Memcached\Internal\TimeoutException;
 
 /**
@@ -566,8 +567,8 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      * Encoding context currently in force, or {@code null} when
      * {@link CacheClient::setEncodingKey()} has not been called (or was last
      * called with an unsupported mode). Backends pipe this value into
-     * {@see Internal\ValueCodec::encode()} /
-     * {@see Internal\ValueCodec::decode()} so encryption stays a
+     * {@see ValueCodec::encode()} /
+     * {@see ValueCodec::decode()} so encryption stays a
      * pure value-pipeline concern and never leaks into protocol handling.
      */
     protected function encodingContext(): ?EncodingContext
@@ -1090,6 +1091,57 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     }
 
     /**
+     * Fan-out helper for whole-pool operations ({@code getStats()}, {@code getVersion()},
+     * {@code flush()}, {@code getAllKeys()}). Walks every configured server, keys
+     * the per-shard result by {@code "host:port"} and records hard transport
+     * failures via {@see recordServerFailure()}.
+     *
+     * Closure contract:
+     *  - return {@code TValue} on success — stored as-is at {@code "host:port"};
+     *  - return {@code null} on a "soft" failure (protocol-level miss that does
+     *    *not* implicate the server) — slot gets {@code $failureValue},
+     *    {@code allOk} flips to {@code false}, the failure tracker is *not*
+     *    touched;
+     *  - throw {@code \Throwable} on a "hard" failure — slot gets
+     *    {@code $failureValue}, {@code allOk} flips to {@code false}, and
+     *    {@see recordServerFailure()} is invoked so the libmemcached-shaped
+     *    failure machinery sees the error.
+     *
+     * @template TValue
+     *
+     * @param \Closure(int $serverIndex, array{host:string,port:int,weight:int,user?:string,password?:string,database?:int}): (TValue|null) $task
+     * @param TValue                                                                                                                        $failureValue value stored in the slot for both soft (null) and hard (throw) failures
+     *
+     * @return array{values: array<string, TValue>, allOk: bool, anyOk: bool}
+     */
+    protected function collectFromServers(\Closure $task, mixed $failureValue): array
+    {
+        $values = [];
+        $allOk = true;
+        $anyOk = false;
+        foreach ($this->core->selector->getServers() as $i => $server) {
+            $label = $server['host'].':'.$server['port'];
+            try {
+                $result = $task($i, $server);
+                if (null === $result) {
+                    $values[$label] = $failureValue;
+                    $allOk = false;
+                    continue;
+                }
+
+                $values[$label] = $result;
+                $anyOk = true;
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($i, $throwable);
+                $values[$label] = $failureValue;
+                $allOk = false;
+            }
+        }
+
+        return ['values' => $values, 'allOk' => $allOk, 'anyOk' => $anyOk];
+    }
+
+    /**
      * Pick the routing index for {@code $key}, honouring an optional server-key override.
      */
     protected function pickServerIndex(?string $serverKey, string $key): int
@@ -1525,6 +1577,157 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         }
 
         return $row;
+    }
+
+    /**
+     * Pre-flight shared by every backend's {@code doDelete()} implementation.
+     *
+     * Centralises the validation order that all three backends previously
+     * unrolled manually: PECL parity requires {@code bad key > delete-time
+     * > no servers > protocol outcome}, and {@see executeKeyed()} would
+     * short-circuit on the empty pool *before* {@see acceptDeleteTime()} —
+     * which is why the original implementations open-coded the same
+     * sequence.
+     *
+     * The body receives the prefixed key and is expected to handle its own
+     * server selection / replica fan-out (delete is always {@see writeFanout()}-d).
+     *
+     * @param \Closure(string $prefixedKey): bool $body
+     */
+    protected function executeDelete(string $key, ?string $serverKey, int $time, \Closure $body): bool
+    {
+        $this->pristine = false;
+        $pk = $this->prefixedKey($key);
+        if (!$this->checkKeyInternal($pk) || (null !== $serverKey && !$this->checkKeyInternal($serverKey))) {
+            $this->setResult(self::RES_BAD_KEY_PROVIDED);
+
+            return false;
+        }
+
+        if (!$this->acceptDeleteTime($time)) {
+            return false;
+        }
+
+        if (!$this->ensureServersAvailable()) {
+            return false;
+        }
+
+        return $body($pk);
+    }
+
+    /**
+     * Wire-format encoder + size-limit guard used by every backend's
+     * {@code doStore()}/{@code doStoreMulti()}. Wraps {@see ValueCodec::encode()}
+     * so each backend doesn't have to repeat the 9-argument call site, and
+     * folds the {@code OPT_ITEM_SIZE_LIMIT} check next to it so a single
+     * helper handles the two PECL error codes the encode path can surface
+     * ({@code RES_PAYLOAD_FAILURE} / {@code RES_E2BIG}).
+     *
+     * Returns the encoded {@code [$payload, $flags]} pair on success, or
+     * {@code null} after setting the appropriate {@code RES_*} code so the
+     * caller can {@code return false;} (or skip the item in a multi-store).
+     *
+     * @return array{0: string, 1: int}|null
+     */
+    protected function encodeForStore(mixed $value): ?array
+    {
+        try {
+            [$payload, $flags] = ValueCodec::encode(
+                $value,
+                $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
+                $this->optionBool(self::OPT_COMPRESSION, true),
+                $this->optionInt(self::OPT_COMPRESSION_TYPE, self::COMPRESSION_TYPE_FASTLZ),
+                $this->optionInt(self::OPT_COMPRESSION_LEVEL, 3),
+                $this->core->compressionThreshold,
+                $this->core->compressionFactor,
+                $this->optionInt(self::OPT_USER_FLAGS, -1),
+                $this->encodingContext(),
+            );
+        } catch (\Throwable) {
+            $this->setResult(self::RES_PAYLOAD_FAILURE);
+
+            return null;
+        }
+
+        $limit = $this->optionInt(self::OPT_ITEM_SIZE_LIMIT, 0);
+        if ($limit > 0 && \strlen($payload) > $limit) {
+            $this->setResult(self::RES_E2BIG);
+
+            return null;
+        }
+
+        return [$payload, $flags];
+    }
+
+    /**
+     * Memcached's {@code append}/{@code prepend} contract requires a raw
+     * byte-string payload on the wire; turning on compression or AEAD
+     * encoding would silently corrupt the stored value. Both PureCache
+     * backends that implement concatenation rely on this guard, so the
+     * three-backend duplication lives here.
+     *
+     * Returns {@code true} when {@code $mode} is *not* an append/prepend or
+     * when neither toggle is active; otherwise emits the PECL-shaped warning,
+     * sets {@code RES_NOTSTORED}, and returns {@code false} — caller should
+     * bail out of the store path.
+     */
+    protected function rejectIncompatibleConcatenation(StoreMode $mode): bool
+    {
+        if (!$mode->isConcatenation()) {
+            return true;
+        }
+
+        if ($this->optionBool(self::OPT_COMPRESSION, true)) {
+            trigger_error('cannot append/prepend with compression turned on', \E_USER_WARNING);
+            $this->setResult(self::RES_NOTSTORED);
+
+            return false;
+        }
+
+        if ($this->encodingContext() instanceof EncodingContext) {
+            trigger_error('cannot append/prepend with encoding key set', \E_USER_WARNING);
+            $this->setResult(self::RES_NOTSTORED);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Sugar for the very common "set the result code and bubble back a
+     * boolean to the public PECL surface" pattern. Returning {@code true}
+     * is the success leg; {@see failResult()} is its mirror.
+     */
+    protected function okResult(int $code): bool
+    {
+        $this->setResult($code);
+
+        return true;
+    }
+
+    protected function failResult(int $code): bool
+    {
+        $this->setResult($code);
+
+        return false;
+    }
+
+    /**
+     * Highest of {@code OPT_RECV_TIMEOUT}/{@code OPT_SEND_TIMEOUT} expressed in
+     * fractional seconds. Backends that talk to a single socket (Redis,
+     * Ignite) use this to derive a unified read/write deadline — memcached's
+     * meta protocol keeps the two halves separate so it bypasses this helper.
+     * Returns {@code 0.0} when neither option is set so callers can treat
+     * the result as "use the underlying default".
+     */
+    protected function recvSendTimeoutSeconds(): float
+    {
+        $recv = $this->optionInt(self::OPT_RECV_TIMEOUT, 0);
+        $send = $this->optionInt(self::OPT_SEND_TIMEOUT, 0);
+        $ms = max($recv, $send);
+
+        return $ms > 0 ? $ms / 1000.0 : 0.0;
     }
 
     protected function acceptDeleteTime(int $time): bool

@@ -16,11 +16,11 @@ namespace PureCache\Internal;
  * means the selector has no usable server at all; the calling site is
  * expected to set {@code RES_NO_SERVERS} and bail out.
  */
-final class ServerPick
+final readonly class ServerPick
 {
     public function __construct(
-        public readonly int $index,
-        public readonly ServerAvailability $status = ServerAvailability::Ok,
+        public int $index,
+        public ServerAvailability $status = ServerAvailability::Ok,
     ) {
     }
 

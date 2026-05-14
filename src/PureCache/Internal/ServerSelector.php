@@ -145,7 +145,7 @@ final class ServerSelector
     {
         $pick = $this->pickServer($routingKey);
 
-        return $pick->index < 0 ? 0 : $pick->index;
+        return max(0, $pick->index);
     }
 
     /**
@@ -199,7 +199,7 @@ final class ServerSelector
             return [];
         }
 
-        $live = null !== $this->failureTracker
+        $live = $this->failureTracker instanceof ServerFailureTracker
             ? $this->failureTracker->availableIndices($count)
             : range(0, $count - 1);
         if ([] === $live) {
@@ -212,7 +212,7 @@ final class ServerSelector
         }
 
         $out = [$primary->index];
-        if ($replicas <= 0 || \count($live) === 1) {
+        if ($replicas <= 0 || 1 === \count($live)) {
             return $out;
         }
 
@@ -246,7 +246,7 @@ final class ServerSelector
 
     private function resolveAvailability(int $idx, \Closure $walkToLive): ServerPick
     {
-        if (null === $this->failureTracker) {
+        if (!$this->failureTracker instanceof ServerFailureTracker) {
             return new ServerPick($idx);
         }
 
@@ -273,7 +273,7 @@ final class ServerSelector
     private function modulaWalkToLive(string $routingKey, int $start): int
     {
         $count = \count($this->servers);
-        if (null === $this->failureTracker || 0 === $count) {
+        if (!$this->failureTracker instanceof ServerFailureTracker || 0 === $count) {
             return $start;
         }
 
@@ -301,7 +301,7 @@ final class ServerSelector
     private function ketamaWalkToLive(string $routingKey, int $start): int
     {
         $count = \count($this->servers);
-        if (null === $this->failureTracker || 0 === $count) {
+        if (!$this->failureTracker instanceof ServerFailureTracker || 0 === $count) {
             return $start;
         }
 
@@ -351,7 +351,11 @@ final class ServerSelector
         $salt = 1;
         while (\count($out) < $maxOut && $salt < 256) {
             $candidate = $this->pickKetamaWithSalt($routingKey, $salt++);
-            if (isset($seen[$candidate]) || !\in_array($candidate, $live, true)) {
+            if (isset($seen[$candidate])) {
+                continue;
+            }
+
+            if (!\in_array($candidate, $live, true)) {
                 continue;
             }
 

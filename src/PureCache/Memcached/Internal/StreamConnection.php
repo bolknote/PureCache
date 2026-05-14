@@ -56,8 +56,6 @@ final class StreamConnection
             return;
         }
 
-        $errno = 0;
-        $errstr = '';
         $target = $this->host;
         $isTcp = true;
         if ('/' === $target[0] || ('.' === $target[0] && str_contains($target, '/'))) {
@@ -75,37 +73,12 @@ final class StreamConnection
             $flags |= \STREAM_CLIENT_PERSISTENT;
         }
 
-        $ctx = stream_context_create([
-            'socket' => [
-                'tcp_nodelay' => $this->tcpNoDelay,
-                'so_keepalive' => $this->tcpKeepAlive,
-            ],
-        ]);
-        $socket = @stream_socket_client(
+        $this->socket = $this->openSocket(
             $uri,
-            $errno,
-            $errstr,
-            $this->connectTimeoutSec,
             $flags,
-            $ctx,
+            \sprintf('Connect failed to %s:%d', $this->host, $this->port),
+            $isTcp,
         );
-        if (!\is_resource($socket)) {
-            $err = error_get_last();
-            $msg = $err['message'] ?? $errstr;
-            $connectErrno = \is_int($errno) ? $errno : 0;
-            throw new ConnectionException(\sprintf('Connect failed to %s:%d: %s (%s)', $this->host, $this->port, $msg, $connectErrno), $connectErrno);
-        }
-
-        stream_set_blocking($socket, true);
-        if ($isTcp) {
-            $this->applyTcpSocketOptions($socket);
-        }
-
-        if (null !== $this->recvTimeoutUsec && $this->recvTimeoutUsec > 0) {
-            stream_set_timeout($socket, intdiv($this->recvTimeoutUsec, 1_000_000), $this->recvTimeoutUsec % 1_000_000);
-        }
-
-        $this->socket = $socket;
         $this->readBuffer = '';
         $this->readOffset = 0;
 
@@ -154,9 +127,31 @@ final class StreamConnection
 
     private function connectFresh(): void
     {
+        $this->socket = $this->openSocket(
+            'tcp://'.$this->host.':'.$this->port,
+            \STREAM_CLIENT_CONNECT,
+            \sprintf('Reconnect (after persistent desync) to %s:%d failed', $this->host, $this->port),
+            true,
+        );
+        $this->readBuffer = '';
+        $this->readOffset = 0;
+    }
+
+    /**
+     * Single low-level entry point that {@see connect()} and
+     * {@see connectFresh()} both use to materialise a socket. Centralises
+     * the {@code stream_socket_client} invocation, the error-path
+     * {@link ConnectionException}, post-connect blocking/timeout setup, and
+     * the optional TCP-socket option application.
+     *
+     * @param int<0,7> $flags any bitmask of {@code STREAM_CLIENT_*} constants
+     *
+     * @return resource
+     */
+    private function openSocket(string $uri, int $flags, string $errorPrefix, bool $applyTcpSocketOptions)
+    {
         $errno = 0;
         $errstr = '';
-        $uri = 'tcp://'.$this->host.':'.$this->port;
         $ctx = stream_context_create([
             'socket' => [
                 'tcp_nodelay' => $this->tcpNoDelay,
@@ -168,25 +163,26 @@ final class StreamConnection
             $errno,
             $errstr,
             $this->connectTimeoutSec,
-            \STREAM_CLIENT_CONNECT,
+            $flags,
             $ctx,
         );
         if (!\is_resource($socket)) {
             $err = error_get_last();
             $msg = $err['message'] ?? $errstr;
             $connectErrno = \is_int($errno) ? $errno : 0;
-            throw new ConnectionException(\sprintf('Reconnect (after persistent desync) to %s:%d failed: %s (%s)', $this->host, $this->port, $msg, $connectErrno), $connectErrno);
+            throw new ConnectionException(\sprintf('%s: %s (%s)', $errorPrefix, $msg, $connectErrno), $connectErrno);
         }
 
         stream_set_blocking($socket, true);
-        $this->applyTcpSocketOptions($socket);
+        if ($applyTcpSocketOptions) {
+            $this->applyTcpSocketOptions($socket);
+        }
+
         if (null !== $this->recvTimeoutUsec && $this->recvTimeoutUsec > 0) {
             stream_set_timeout($socket, intdiv($this->recvTimeoutUsec, 1_000_000), $this->recvTimeoutUsec % 1_000_000);
         }
 
-        $this->socket = $socket;
-        $this->readBuffer = '';
-        $this->readOffset = 0;
+        return $socket;
     }
 
     /**

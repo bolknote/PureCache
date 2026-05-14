@@ -109,22 +109,9 @@ final class MemcachedClientStateTest extends TestCase
         self::assertTrue($client->setBucket([0, 1], null, 0));
         self::assertSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
 
-        $warning = null;
-        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
-            if (\E_USER_WARNING === $severity) {
-                $warning = $message;
-
-                return true;
-            }
-
-            return false;
-        });
-
-        try {
+        $warning = $this->captureUserWarning(static function () use ($client): void {
             self::assertFalse($client->setBucket([], null, 0));
-        } finally {
-            restore_error_handler();
-        }
+        });
 
         self::assertSame('Memcached::setBucket(): server map cannot be empty', $warning);
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
@@ -134,22 +121,9 @@ final class MemcachedClientStateTest extends TestCase
     {
         $client = new MemcachedClient();
 
-        $warning = null;
-        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
-            if (\E_USER_WARNING === $severity) {
-                $warning = $message;
-
-                return true;
-            }
-
-            return false;
-        });
-
-        try {
+        $warning = $this->captureUserWarning(static function () use ($client): void {
             self::assertFalse($client->setBucket([0, 1], [0], 0));
-        } finally {
-            restore_error_handler();
-        }
+        });
 
         self::assertSame('Memcached::setBucket(): forward_map length must match the server_map length', $warning);
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
@@ -159,22 +133,9 @@ final class MemcachedClientStateTest extends TestCase
     {
         $client = new MemcachedClient();
 
-        $warning = null;
-        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
-            if (\E_USER_WARNING === $severity) {
-                $warning = $message;
-
-                return true;
-            }
-
-            return false;
-        });
-
-        try {
+        $warning = $this->captureUserWarning(static function () use ($client): void {
             self::assertFalse($client->setBucket([0], null, -1));
-        } finally {
-            restore_error_handler();
-        }
+        });
 
         self::assertSame('Memcached::setBucket(): replicas must be larger than zero', $warning);
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
@@ -183,22 +144,10 @@ final class MemcachedClientStateTest extends TestCase
     public function testSetBucketRejectsNegativeMapValues(): void
     {
         $client = new MemcachedClient();
-        $warning = null;
-        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
-            if (\E_USER_WARNING === $severity) {
-                $warning = $message;
 
-                return true;
-            }
-
-            return false;
-        });
-
-        try {
+        $warning = $this->captureUserWarning(static function () use ($client): void {
             self::assertFalse($client->setBucket([-1], null, 1));
-        } finally {
-            restore_error_handler();
-        }
+        });
 
         self::assertSame('Memcached::setBucket(): the map must contain positive integers', $warning);
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
@@ -217,23 +166,11 @@ final class MemcachedClientStateTest extends TestCase
     public function testSetBucketRejectsNegativeFloatAndStringMapValues(): void
     {
         $client = new MemcachedClient();
-        $warning = null;
-        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
-            if (\E_USER_WARNING === $severity) {
-                $warning = $message;
 
-                return true;
-            }
-
-            return false;
-        });
-
-        try {
+        $warning = $this->captureUserWarning(static function () use ($client): void {
             self::assertFalse($client->setBucket([0, '-2'], null, 1));
             self::assertFalse($client->setBucket([0, -1.5], null, 1));
-        } finally {
-            restore_error_handler();
-        }
+        });
 
         self::assertSame('Memcached::setBucket(): the map must contain positive integers', $warning);
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
@@ -636,6 +573,34 @@ final class MemcachedClientStateTest extends TestCase
         return $map;
     }
 
+    /**
+     * Run {@code $body} with a {@code set_error_handler} that captures the
+     * first {@code E_USER_WARNING} message raised inside it. Restores the
+     * previous handler unconditionally so a failing inner assertion never
+     * leaks state into the next test.
+     */
+    private function captureUserWarning(\Closure $body): ?string
+    {
+        $warning = null;
+        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
+            if (\E_USER_WARNING === $severity) {
+                $warning = $message;
+
+                return true;
+            }
+
+            return false;
+        });
+
+        try {
+            $body();
+        } finally {
+            restore_error_handler();
+        }
+
+        return $warning;
+    }
+
     public function testLocallyImplementedBooleanOptionsAreStored(): void
     {
         $client = new MemcachedClient();
@@ -727,23 +692,11 @@ final class MemcachedClientStateTest extends TestCase
     public function testNegativeIncrementOffsetReturnsFalseAndSetsInvalidArguments(): void
     {
         $client = new MemcachedClient();
-        $warning = null;
 
-        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
-            if (\E_USER_WARNING === $severity) {
-                $warning = $message;
-
-                return true;
-            }
-
-            return false;
-        });
-
-        try {
+        $result = false;
+        $warning = $this->captureUserWarning(static function () use ($client, &$result): void {
             $result = $client->increment('counter', -1);
-        } finally {
-            restore_error_handler();
-        }
+        });
 
         self::assertFalse($result);
         self::assertSame('offset cannot be a negative value', $warning);
@@ -753,44 +706,19 @@ final class MemcachedClientStateTest extends TestCase
     public function testAppendAndPrependRejectCompression(): void
     {
         $client = new MemcachedClient();
-        $warning = null;
 
-        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
-            if (\E_USER_WARNING === $severity) {
-                $warning = $message;
-
-                return true;
-            }
-
-            return false;
-        });
-
-        try {
+        $result = false;
+        $warning = $this->captureUserWarning(static function () use ($client, &$result): void {
             $result = $client->append('key', 'suffix');
-        } finally {
-            restore_error_handler();
-        }
+        });
 
         self::assertFalse($result);
         self::assertSame('cannot append/prepend with compression turned on', $warning);
         self::assertSame(MemcachedClient::RES_NOTSTORED, $client->getResultCode());
 
-        $warning = null;
-        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
-            if (\E_USER_WARNING === $severity) {
-                $warning = $message;
-
-                return true;
-            }
-
-            return false;
-        });
-
-        try {
+        $warning = $this->captureUserWarning(static function () use ($client, &$result): void {
             $result = $client->prepend('key', 'prefix');
-        } finally {
-            restore_error_handler();
-        }
+        });
 
         self::assertFalse($result);
         self::assertSame('cannot append/prepend with compression turned on', $warning);
