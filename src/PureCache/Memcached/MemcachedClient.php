@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace PureCache\Memcached;
 
 use PureCache\AbstractCacheClient;
-use PureCache\Internal\ClientCoreState;
+use PureCache\Internal\CacheEntry;
+use PureCache\Internal\PersistentStateRegistry;
+use PureCache\Internal\StoreMode;
 use PureCache\Internal\ValueCodec;
 use PureCache\Memcached\Internal\DecodedMetaValue;
 use PureCache\Memcached\Internal\MemcachedClientCore;
@@ -27,25 +29,13 @@ use PureCache\Memcached\Internal\TextProtocolClient;
  */
 final class MemcachedClient extends AbstractCacheClient
 {
-    /** @var array<string, MemcachedClientCore> */
-    private static array $persistentPool = [];
+    /** @use PersistentStateRegistry<MemcachedClientCore> */
+    use PersistentStateRegistry;
 
     #[\Override]
-    protected function createState(?string $persistentId): ClientCoreState
+    protected function createState(?string $persistentId): MemcachedClientCore
     {
         return MemcachedClientCore::createFresh($persistentId);
-    }
-
-    #[\Override]
-    protected function lookupPersistentState(string $persistentId): ?ClientCoreState
-    {
-        return self::$persistentPool[$persistentId] ?? null;
-    }
-
-    #[\Override]
-    protected function registerPersistentState(string $persistentId, ClientCoreState $state): void
-    {
-        self::$persistentPool[$persistentId] = $state;
     }
 
     #[\Override]
@@ -104,11 +94,10 @@ final class MemcachedClient extends AbstractCacheClient
     #[\Override]
     protected function doGet(string $key, string $prefixedKey, ?string $serverKey, int $getFlags): mixed
     {
-        $core = $this->core();
-        $idx = $core->selector->pickServerIndex($serverKey ?? $this->routingKey($key));
-        try {
-            $c = $core->conn->get($idx);
-            $c->write(MetaCommandBuilder::metaGetValue($prefixedKey));
+        return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($getFlags): mixed {
+            $c = $this->core()->conn->get($idx);
+            $c->write(MetaCommandBuilder::metaGetValue($pk));
+
             $reader = new MetaReader($c);
             $item = $this->readDecodedMetaValue($reader);
             if (false === $item) {
@@ -123,13 +112,8 @@ final class MemcachedClient extends AbstractCacheClient
 
             $this->setResult(self::RES_SUCCESS);
 
-            return $this->valueForGetFlags($item->value, $item->result(), $getFlags);
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
-
-            return false;
-        }
+            return $this->valueForGetFlags($this->entryFromMeta($item), $getFlags);
+        });
     }
 
     /**
@@ -144,10 +128,11 @@ final class MemcachedClient extends AbstractCacheClient
         $byServer = $this->groupKeysByServer($keys, $serverKey);
 
         $found = [];
-        $currentIdx = null;
-        try {
-            foreach ($byServer as $serverIdx => $pairs) {
-                $currentIdx = $serverIdx;
+        $hadFailure = false;
+        $hadSuccess = false;
+        $lastError = null;
+        foreach ($byServer as $serverIdx => $pairs) {
+            try {
                 $c = $core->conn->get($serverIdx);
                 foreach ($pairs as [, $pk]) {
                     $this->send($c, MetaCommandBuilder::metaGetValue($pk));
@@ -157,19 +142,34 @@ final class MemcachedClient extends AbstractCacheClient
                 foreach ($pairs as [$orig]) {
                     $item = $this->readDecodedMetaValue($reader);
                     if (false === $item) {
-                        return false;
+                        $hadFailure = true;
+                        continue;
                     }
 
+                    $hadSuccess = true;
                     if ($item->found) {
-                        $found[$orig] = $this->valueForGetFlags($item->value, $item->result(), $getFlags);
+                        $found[$orig] = $this->valueForGetFlags($this->entryFromMeta($item), $getFlags);
                     }
                 }
+            } catch (\Throwable $throwable) {
+                $this->recordServerFailure($serverIdx, $throwable);
+                $lastError = $throwable;
+                $hadFailure = true;
             }
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($currentIdx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+        }
+
+        // PECL parity: when at least one server-shard succeeded we keep its
+        // results around and surface RES_SOME_ERRORS. Only when every shard
+        // failed do we propagate a hard RES_FAILURE — losing the buffered
+        // partial hits would silently mask a partial fan-out.
+        if ($hadFailure && !$hadSuccess) {
+            $this->setResult(self::RES_FAILURE, $lastError instanceof \Throwable ? $lastError->getMessage() : null);
 
             return false;
+        }
+
+        if ($hadFailure) {
+            $this->setResult(self::RES_SOME_ERRORS, $lastError instanceof \Throwable ? $lastError->getMessage() : null);
         }
 
         return $found;
@@ -178,10 +178,10 @@ final class MemcachedClient extends AbstractCacheClient
     /**
      * @param list<string> $keys
      *
-     * @return list<array<string, mixed>>|null
+     * @return list<array<string, mixed>>|false
      */
     #[\Override]
-    protected function doFetchBatch(array $keys, ?string $serverKey, bool $withCas): ?array
+    protected function doFetchBatch(array $keys, ?string $serverKey, bool $withCas): array|false
     {
         $core = $this->core();
         $results = [];
@@ -199,11 +199,11 @@ final class MemcachedClient extends AbstractCacheClient
                 foreach ($pairs as [$orig]) {
                     $item = $this->readDecodedMetaValue($reader);
                     if (false === $item) {
-                        return null;
+                        return false;
                     }
 
                     if ($item->found) {
-                        $results[] = $this->delayedEntry($orig, $item->value, $item->result(), $withCas);
+                        $results[] = $this->delayedEntry($orig, $this->entryFromMeta($item), $withCas);
                     }
                 }
             }
@@ -211,7 +211,7 @@ final class MemcachedClient extends AbstractCacheClient
             $this->recordServerFailure($currentIdx, $throwable);
             $this->setResult(self::RES_FAILURE, $throwable->getMessage());
 
-            return null;
+            return false;
         }
 
         return $results;
@@ -240,17 +240,15 @@ final class MemcachedClient extends AbstractCacheClient
                 $reader = new MetaReader($c);
                 foreach ($pairs as [$orig]) {
                     $item = $this->readDecodedMetaValue($reader);
-                    if (false === $item || !$item->found) {
+                    if (false === $item) {
                         continue;
                     }
 
-                    $cb = ['key' => $orig, 'value' => $item->value];
-                    if ($withCas) {
-                        $cb['cas'] = $this->casValue($item->result()->getCas());
-                        $cb['flags'] = ValueCodec::getUserFlags((int) ($item->result()->getToken('f') ?? '0'));
+                    if (!$item->found) {
+                        continue;
                     }
 
-                    $valueCb($this, $cb);
+                    $valueCb($this, $this->delayedEntry($orig, $this->entryFromMeta($item), $withCas));
                 }
             }
         } catch (\Throwable $throwable) {
@@ -270,10 +268,10 @@ final class MemcachedClient extends AbstractCacheClient
     // -----------------------------------------------------------------------
 
     #[\Override]
-    protected function doStore(string $key, mixed $value, int $expiration, string $mode, ?string $serverKey, ?string $casToken): bool
+    protected function doStore(string $key, mixed $value, int $expiration, StoreMode $mode, ?string $serverKey, ?string $casToken): bool
     {
         $this->pristine = false;
-        if (('A' === $mode || 'P' === $mode) && $this->optionBool(self::OPT_COMPRESSION, true)) {
+        if ($mode->isConcatenation() && $this->optionBool(self::OPT_COMPRESSION, true)) {
             trigger_error('cannot append/prepend with compression turned on', \E_USER_WARNING);
             $this->setResult(self::RES_NOTSTORED);
 
@@ -291,7 +289,7 @@ final class MemcachedClient extends AbstractCacheClient
             return false;
         }
 
-        $idx = $this->core()->selector->pickServerIndex($serverKey ?? $this->routingKey($key));
+        $idx = $this->pickServerIndex($serverKey, $key);
         try {
             if (!$this->shouldBufferNoReplyWrite()) {
                 $this->flushNetworkWrites();
@@ -335,13 +333,13 @@ final class MemcachedClient extends AbstractCacheClient
         $ok = true;
         foreach ($items as $key => $value) {
             $keyString = (string) $key;
-            $prepared = $this->prepareStoreCommand($keyString, $value, $expiration, 'S', $serverKey, null);
+            $prepared = $this->prepareStoreCommand($keyString, $value, $expiration, StoreMode::Set, $serverKey, null);
             if (false === $prepared) {
                 $ok = false;
                 continue;
             }
 
-            $idx = $core->selector->pickServerIndex($serverKey ?? $this->routingKey($keyString));
+            $idx = $this->pickServerIndex($serverKey, $keyString);
             $batches[$idx][] = $prepared;
         }
 
@@ -384,66 +382,37 @@ final class MemcachedClient extends AbstractCacheClient
     #[\Override]
     protected function doTouch(string $key, int $expiration, ?string $serverKey): bool
     {
-        $this->pristine = false;
         $this->flushNetworkWrites();
-        $pk = $this->prefixedKey($key);
-        if (!$this->checkKeyInternal($pk)) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
 
-            return false;
-        }
-
-        if (null !== $serverKey && !$this->checkKeyInternal($serverKey)) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
-
-            return false;
-        }
-
-        if (!$this->ensureServersAvailable()) {
-            return false;
-        }
-
-        $core = $this->core();
-        $idx = $core->selector->pickServerIndex($serverKey ?? $this->routingKey($key));
-        try {
-            $c = $core->conn->get($idx);
+        return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($expiration): bool {
+            $c = $this->core()->conn->get($idx);
             $c->write(MetaCommandBuilder::metaGetTouch($pk, $this->ttlToken($expiration)));
+
             $reader = new MetaReader($c);
             $r = $reader->readOne(false);
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure($idx, $throwable);
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+            if ($this->applyMetaWireError($r)) {
+                return false;
+            }
 
-            return false;
-        }
-
-        if ($this->applyMetaWireError($r)) {
-            return false;
-        }
-
-        return match ($r->code) {
-            'HD' => $this->okResult(self::RES_SUCCESS),
-            'EN' => $this->failResult(self::RES_NOTFOUND),
-            default => $this->failResult(self::RES_FAILURE),
-        };
+            return match ($r->code) {
+                'HD' => $this->okResult(self::RES_SUCCESS),
+                'EN' => $this->failResult(self::RES_NOTFOUND),
+                default => $this->failResult(self::RES_FAILURE),
+            };
+        });
     }
 
     #[\Override]
     protected function doDelete(string $key, ?string $serverKey, int $time): bool
     {
+        // PECL parity: `delete('bad key', 1)` reports RES_BAD_KEY_PROVIDED, but
+        // `delete('valid', 1)` with no servers configured still reports
+        // RES_NOT_SUPPORTED — i.e. key validation > delete-time validation > server pool.
+        // {@see executeKeyed()} would short-circuit on the empty pool first, so
+        // this method spells the order out manually.
         $this->pristine = false;
-        if (!$this->shouldBufferNoReplyWrite()) {
-            $this->flushNetworkWrites();
-        }
-
         $pk = $this->prefixedKey($key);
-        if (!$this->checkKeyInternal($pk)) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
-
-            return false;
-        }
-
-        if (null !== $serverKey && !$this->checkKeyInternal($serverKey)) {
+        if (!$this->checkKeyInternal($pk) || (null !== $serverKey && !$this->checkKeyInternal($serverKey))) {
             $this->setResult(self::RES_BAD_KEY_PROVIDED);
 
             return false;
@@ -457,10 +426,13 @@ final class MemcachedClient extends AbstractCacheClient
             return false;
         }
 
-        $core = $this->core();
-        $idx = $core->selector->pickServerIndex($serverKey ?? $this->routingKey($key));
+        if (!$this->shouldBufferNoReplyWrite()) {
+            $this->flushNetworkWrites();
+        }
+
+        $idx = $this->pickServerIndex($serverKey, $key);
         try {
-            $c = $core->conn->get($idx);
+            $c = $this->core()->conn->get($idx);
             $this->send($c, MetaCommandBuilder::metaDelete($pk, $this->useNoReply()));
             if ($this->useNoReply()) {
                 $this->setResult(self::RES_SUCCESS);
@@ -489,7 +461,7 @@ final class MemcachedClient extends AbstractCacheClient
     }
 
     #[\Override]
-    protected function doArith(string $key, int $offset, bool $decrement, ?string $serverKey, int $initialValue, int $expiry): int|false
+    protected function doArith(string $key, int $offset, bool $decrement, ?string $serverKey, int $initialValue, int $expiry, bool $autoCreate = false): int|false
     {
         if ($offset < 0) {
             trigger_error('offset cannot be a negative value', \E_USER_WARNING);
@@ -498,63 +470,45 @@ final class MemcachedClient extends AbstractCacheClient
             return false;
         }
 
-        $this->pristine = false;
         $this->flushNetworkWrites();
-        $pk = $this->prefixedKey($key);
-        if (!$this->checkKeyInternal($pk)) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
 
-            return false;
-        }
-
-        if (null !== $serverKey && !$this->checkKeyInternal($serverKey)) {
-            $this->setResult(self::RES_BAD_KEY_PROVIDED);
-
-            return false;
-        }
-
-        if (!$this->ensureServersAvailable()) {
-            return false;
-        }
-
-        $core = $this->core();
-        $idx = $core->selector->pickServerIndex($serverKey ?? $this->routingKey($key));
-        try {
-            $c = $core->conn->get($idx);
-            $c->write(MetaCommandBuilder::metaArith($pk, $offset, $decrement));
+        return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($offset, $decrement, $initialValue, $expiry, $autoCreate): int|false {
+            $c = $this->core()->conn->get($idx);
+            $c->write(MetaCommandBuilder::metaArith(
+                $pk,
+                $offset,
+                $decrement,
+                $autoCreate ? $initialValue : null,
+                $autoCreate ? $expiry : null,
+            ));
             $reader = new MetaReader($c);
             $r = $reader->readArithmeticValue();
-        } catch (\Throwable $throwable) {
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+            if ($this->applyMetaWireError($r)) {
+                return false;
+            }
+
+            if ('VA' === $r->code && null !== $r->value) {
+                $this->setResult(self::RES_SUCCESS);
+
+                return (int) trim($r->value);
+            }
+
+            if ('NF' === $r->code) {
+                $this->setResult(self::RES_NOTFOUND);
+
+                return false;
+            }
+
+            if ('NS' === $r->code) {
+                $this->setResult(self::RES_NOTSTORED);
+
+                return false;
+            }
+
+            $this->setResult(self::RES_FAILURE);
 
             return false;
-        }
-
-        if ($this->applyMetaWireError($r)) {
-            return false;
-        }
-
-        if ('VA' === $r->code && null !== $r->value) {
-            $this->setResult(self::RES_SUCCESS);
-
-            return (int) trim($r->value);
-        }
-
-        if ('NF' === $r->code) {
-            $this->setResult(self::RES_NOTFOUND);
-
-            return false;
-        }
-
-        if ('NS' === $r->code) {
-            $this->setResult(self::RES_NOTSTORED);
-
-            return false;
-        }
-
-        $this->setResult(self::RES_FAILURE);
-
-        return false;
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -714,32 +668,7 @@ final class MemcachedClient extends AbstractCacheClient
     // Internals: encoding, reading, error mapping
     // -----------------------------------------------------------------------
 
-    /**
-     * @param list<string> $keys
-     *
-     * @return array<int, list<array{0:string,1:string}>>
-     */
-    private function groupKeysByServer(array $keys, ?string $serverKey): array
-    {
-        $core = $this->core();
-        $byServer = [];
-        if (null === $serverKey) {
-            foreach ($keys as $ks) {
-                $pk = $this->prefixedKey($ks);
-                $idx = $core->selector->pickServerIndex($this->routingKey($ks));
-                $byServer[$idx][] = [$ks, $pk];
-            }
-        } else {
-            $idx = $core->selector->pickServerIndex($serverKey);
-            foreach ($keys as $ks) {
-                $byServer[$idx][] = [$ks, $this->prefixedKey($ks)];
-            }
-        }
-
-        return $byServer;
-    }
-
-    private function prepareStoreCommand(string $key, mixed $value, int $expiration, string $mode, ?string $serverKey, ?string $casToken): string|false
+    private function prepareStoreCommand(string $key, mixed $value, int $expiration, StoreMode $mode, ?string $serverKey, ?string $casToken): string|false
     {
         $core = $this->core();
         try {
@@ -788,7 +717,7 @@ final class MemcachedClient extends AbstractCacheClient
             $extra[] = 'C'.$casToken;
         }
 
-        return MetaCommandBuilder::metaStore($pk, $payload, $flags, $this->ttlToken($expiration), $mode, $extra);
+        return MetaCommandBuilder::metaStore($pk, $payload, $flags, $this->ttlToken($expiration), $mode->value, $extra);
     }
 
     private function mapStoreResult(MetaResult $r): bool
@@ -835,7 +764,11 @@ final class MemcachedClient extends AbstractCacheClient
 
     private function readDecodedMetaValue(MetaReader $reader): DecodedMetaValue|false
     {
-        $decoded = MetaValueReader::read($reader, $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP));
+        $decoded = MetaValueReader::read(
+            $reader,
+            $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
+            $this->optionBool(self::OPT_ALLOW_SERIALIZED_CLASSES, false),
+        );
         if ($decoded->isFailure()) {
             $this->setResult($decoded->errorCode ?? self::RES_FAILURE, $decoded->errorMessage);
 
@@ -845,30 +778,16 @@ final class MemcachedClient extends AbstractCacheClient
         return $decoded;
     }
 
-    private function valueForGetFlags(mixed $value, MetaResult $result, int $getFlags): mixed
+    private function entryFromMeta(DecodedMetaValue $item): CacheEntry
     {
-        if (($getFlags & self::GET_EXTENDED) !== 0) {
-            $cas = $this->casValue($result->getCas());
-            $flags = (int) ($result->getToken('f') ?? '0');
+        $result = $item->result();
+        $flagsRaw = (int) ($result->getToken('f') ?? '0');
 
-            return ['value' => $value, 'cas' => $cas, 'flags' => ValueCodec::getUserFlags($flags)];
-        }
-
-        return $value;
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function delayedEntry(string $key, mixed $value, MetaResult $result, bool $withCas): array
-    {
-        $entry = ['key' => $key, 'value' => $value];
-        if ($withCas) {
-            $entry['cas'] = $this->casValue($result->getCas());
-            $entry['flags'] = ValueCodec::getUserFlags((int) ($result->getToken('f') ?? '0'));
-        }
-
-        return $entry;
+        return new CacheEntry(
+            $item->value,
+            $this->casValue($result->getCas()),
+            ValueCodec::getUserFlags($flagsRaw),
+        );
     }
 
     private function ttlToken(int $expiration): string

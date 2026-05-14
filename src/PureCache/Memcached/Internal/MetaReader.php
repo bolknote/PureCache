@@ -12,6 +12,12 @@ final readonly class MetaReader
 
     /**
      * Read one meta response (and optional value block for VA).
+     *
+     * When {@code $expectValueBlock} is {@code false} but the server still
+     * returned a {@code VA} line with a non-empty body, we MUST consume the
+     * body + trailing CRLF anyway — otherwise the next read on this socket
+     * would observe stale bytes from the previous value chunk and produce
+     * silent data corruption. The unwanted body is discarded.
      */
     public function readOne(bool $expectValueBlock): MetaResult
     {
@@ -28,17 +34,18 @@ final readonly class MetaReader
             }
 
             $size = isset($parts[1]) ? (int) $parts[1] : 0;
-            if ($expectValueBlock && $size > 0) {
+
+            if ($size > 0) {
                 $body = $this->conn->readExact($size);
                 $this->conn->consumeCrLfAfterBody();
 
-                return $r->withValue($body);
+                return $expectValueBlock ? $r->withValue($body) : $r;
             }
 
-            if ($expectValueBlock && 0 === $size) {
+            if (0 === $size) {
                 $this->conn->consumeCrLfAfterBody();
 
-                return $r->withValue('');
+                return $expectValueBlock ? $r->withValue('') : $r;
             }
 
             return $r;

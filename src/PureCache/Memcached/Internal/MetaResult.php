@@ -90,18 +90,11 @@ final readonly class MetaResult
             return null;
         }
 
-        if (1 === preg_match('/^SERVER_ERROR\\b/', $this->code)) {
-            return MemcachedConstants::RES_SERVER_ERROR;
-        }
-
-        if (1 === preg_match('/^CLIENT_ERROR\\b/', $this->code)) {
-            return MemcachedConstants::RES_CLIENT_ERROR;
-        }
-
-        if ('ERROR' === $this->code) {
-            return MemcachedConstants::RES_FAILURE;
-        }
-
-        return MemcachedConstants::RES_PROTOCOL_ERROR;
+        return match (true) {
+            1 === preg_match('/^SERVER_ERROR\\b/', $this->code) => MemcachedConstants::RES_SERVER_ERROR,
+            1 === preg_match('/^CLIENT_ERROR\\b/', $this->code) => MemcachedConstants::RES_CLIENT_ERROR,
+            'ERROR' === $this->code => MemcachedConstants::RES_FAILURE,
+            default => MemcachedConstants::RES_PROTOCOL_ERROR,
+        };
     }
 }

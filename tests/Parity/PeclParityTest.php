@@ -314,6 +314,41 @@ final class PeclParityTest extends TestCase
                     'decrement' => $client->decrement($key, 1),
                 ];
             },
+            peclBinary: true,
+        );
+    }
+
+    /**
+     * PECL passes the user's expiration argument through to libmemcached
+     * untouched, and the memcached server itself implements the "{@code > 30
+     * days = absolute Unix timestamp}" cut-off. Our implementation must
+     * preserve that contract on both backends — see
+     * {@see \PureCache\Internal\Expiration::toRelativeSeconds()}.
+     */
+    public function testArithmeticAutoCreateWithAbsoluteExpirationParity(): void
+    {
+        $this->assertParity(
+            static function (\Memcached $client, string $prefix): array {
+                $key = $prefix.'abs-ttl';
+                $absolute = time() + 60;
+
+                return [
+                    'initial' => $client->increment($key, 1, 5, $absolute),
+                    'initialCode' => $client->getResultCode(),
+                    'value' => $client->get($key),
+                ];
+            },
+            static function (MemcachedClient $client, string $prefix): array {
+                $key = $prefix.'abs-ttl';
+                $absolute = time() + 60;
+
+                return [
+                    'initial' => $client->increment($key, 1, 5, $absolute),
+                    'initialCode' => $client->getResultCode(),
+                    'value' => $client->get($key),
+                ];
+            },
+            peclBinary: true,
         );
     }
 
@@ -385,11 +420,11 @@ final class PeclParityTest extends TestCase
      * @param callable(\Memcached, string): array<string, mixed>      $peclScenario
      * @param callable(MemcachedClient, string): array<string, mixed> $pureScenario
      */
-    private function assertParity(callable $peclScenario, callable $pureScenario): void
+    private function assertParity(callable $peclScenario, callable $pureScenario, bool $peclBinary = false): void
     {
         $prefix = 'parity_'.bin2hex(random_bytes(6)).'_';
 
-        $pecl = $this->peclClient();
+        $pecl = $this->peclClient($peclBinary);
         $pecl->flush();
 
         $peclResult = $this->normalizeForParity($peclScenario($pecl, $prefix));
@@ -402,12 +437,19 @@ final class PeclParityTest extends TestCase
         self::assertSame($peclResult, $pureResult);
     }
 
-    private function peclClient(): \Memcached
+    private function peclClient(bool $binary = false): \Memcached
     {
         $client = new \Memcached();
         $client->addServer($this->host(), $this->port());
         $client->setOption(\Memcached::OPT_COMPRESSION, false);
         $client->setOption(\Memcached::OPT_SERIALIZER, \Memcached::SERIALIZER_PHP);
+        if ($binary) {
+            // PureCache speaks the meta protocol, which is semantically
+            // equivalent to PECL's binary mode for features like
+            // increment_with_initial. Match that contract only on the cases
+            // that exercise it.
+            $client->setOption(\Memcached::OPT_BINARY_PROTOCOL, true);
+        }
 
         return $client;
     }

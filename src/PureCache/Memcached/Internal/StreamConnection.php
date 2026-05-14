@@ -104,6 +104,86 @@ final class StreamConnection
 
         $this->socket = $socket;
         $this->readBuffer = '';
+        $this->readOffset = 0;
+
+        if (null !== $this->persistentId && '' !== $this->persistentId && $isTcp) {
+            $this->verifyPersistentSocketSync();
+        }
+    }
+
+    /**
+     * When a {@code STREAM_CLIENT_PERSISTENT} fd is handed back to a fresh
+     * PHP-FPM worker, the kernel-level receive buffer may still contain
+     * leftover bytes from whichever request abandoned the socket last (e.g.
+     * a partially-consumed response after a fatal error). Issue a single
+     * {@code version} round-trip and if the reply doesn't look like a
+     * memcached {@code VERSION} line — drop the socket and reconnect fresh.
+     *
+     * The {@see $writeBuffer} is intentionally *not* mutated here. Callers
+     * (notably {@see bufferWrite()}) may have queued user commands before the
+     * first {@code connect()} ran — flushing those mid-handshake would
+     * silently drop them.
+     */
+    private function verifyPersistentSocketSync(): void
+    {
+        $socket = $this->socket;
+        if (!\is_resource($socket)) {
+            return;
+        }
+
+        $payload = "version\r\n";
+        $sent = @fwrite($socket, $payload);
+        if (false === $sent || $sent < \strlen($payload)) {
+            @fclose($socket);
+            $this->socket = null;
+            $this->connectFresh();
+
+            return;
+        }
+
+        $line = @fgets($socket);
+        if (false === $line || !str_starts_with($line, 'VERSION ')) {
+            @fclose($socket);
+            $this->socket = null;
+            $this->connectFresh();
+        }
+    }
+
+    private function connectFresh(): void
+    {
+        $errno = 0;
+        $errstr = '';
+        $uri = 'tcp://'.$this->host.':'.$this->port;
+        $ctx = stream_context_create([
+            'socket' => [
+                'tcp_nodelay' => $this->tcpNoDelay,
+                'so_keepalive' => $this->tcpKeepAlive,
+            ],
+        ]);
+        $socket = @stream_socket_client(
+            $uri,
+            $errno,
+            $errstr,
+            $this->connectTimeoutSec,
+            \STREAM_CLIENT_CONNECT,
+            $ctx,
+        );
+        if (!\is_resource($socket)) {
+            $err = error_get_last();
+            $msg = $err['message'] ?? $errstr;
+            $connectErrno = \is_int($errno) ? $errno : 0;
+            throw new ConnectionException(\sprintf('Reconnect (after persistent desync) to %s:%d failed: %s (%s)', $this->host, $this->port, $msg, $connectErrno), $connectErrno);
+        }
+
+        stream_set_blocking($socket, true);
+        $this->applyTcpSocketOptions($socket);
+        if (null !== $this->recvTimeoutUsec && $this->recvTimeoutUsec > 0) {
+            stream_set_timeout($socket, intdiv($this->recvTimeoutUsec, 1_000_000), $this->recvTimeoutUsec % 1_000_000);
+        }
+
+        $this->socket = $socket;
+        $this->readBuffer = '';
+        $this->readOffset = 0;
     }
 
     /**
@@ -225,8 +305,22 @@ final class StreamConnection
         $this->writeBuffer = '';
     }
 
+    /**
+     * Trims the consumed prefix of {@see $readBuffer}. The {@code 16 KiB}
+     * threshold is a microopt that keeps tiny consumed chunks (eg. a 3-byte
+     * status line) from triggering a substring per call; once the offset
+     * actually catches up with the buffer length we still flush eagerly so we
+     * don't carry an arbitrarily long, fully-consumed string across requests.
+     */
     private function compactBuffer(): void
     {
+        if ($this->readOffset >= \strlen($this->readBuffer)) {
+            $this->readBuffer = '';
+            $this->readOffset = 0;
+
+            return;
+        }
+
         if ($this->readOffset > 16384) {
             $this->readBuffer = substr($this->readBuffer, $this->readOffset);
             $this->readOffset = 0;

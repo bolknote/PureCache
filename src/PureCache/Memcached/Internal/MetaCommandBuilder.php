@@ -16,6 +16,10 @@ use PureCache\Internal\KeyFormatter;
  */
 final class MetaCommandBuilder
 {
+    private function __construct()
+    {
+    }
+
     /**
      * Read a value with the {@code mg <key> v f t c} request used by {@code get}/{@code getMulti}.
      */
@@ -76,11 +80,26 @@ final class MetaCommandBuilder
 
     /**
      * Arithmetic via {@code ma}: {@code D<offset>}, mode {@code MI}/{@code MD} and {@code v} to echo the new value.
+     *
+     * To stay compatible with PECL {@code Memcached::increment()} /
+     * {@code Memcached::decrement()} we also forward {@code initialValue} and
+     * {@code expiry} via the meta tokens {@code J<v>} (auto-create initial)
+     * and {@code N<ttl>} (auto-create TTL). When both are {@code null} the
+     * server returns {@code NF} on a missing key — mirroring PECL's
+     * "no autovivification" default.
      */
-    public static function metaArith(string $prefixedKey, int $offset, bool $decrement): string
+    public static function metaArith(string $prefixedKey, int $offset, bool $decrement, ?int $initialValue = null, ?int $expiry = null): string
     {
         [$encodedKey, $bFlag] = KeyFormatter::encodeMetaKey($prefixedKey);
         $parts = ['D'.$offset, $decrement ? 'MD' : 'MI', 'v'];
+        if (null !== $expiry) {
+            $parts[] = 'N'.$expiry;
+        }
+
+        if (null !== $initialValue) {
+            $parts[] = 'J'.$initialValue;
+        }
+
         if ('' !== $bFlag) {
             $parts[] = trim($bFlag);
         }

@@ -88,6 +88,44 @@ final class ProtocolReaderTest extends TestCase
         fclose($server);
     }
 
+    /**
+     * Even when the caller passes {@code expectValueBlock=false}, we still
+     * have to consume the {@code VA} body + CRLF from the socket — otherwise
+     * the next read would pick up the orphaned body bytes and corrupt the
+     * stream. Regression: previously the body was left in the buffer.
+     */
+    public function testMetaReaderConsumesUnwantedValueBodyToKeepSocketInSync(): void
+    {
+        [$connection, $server] = $this->socketConnection(
+            "VA 5 f0\r\nvalue\r\nHD\r\n",
+        );
+
+        $reader = new MetaReader($connection);
+
+        $first = $reader->readOne(false);
+        self::assertSame('VA', $first->code);
+        self::assertNull($first->value);
+
+        $second = $reader->readOne(false);
+        self::assertSame('HD', $second->code);
+
+        fclose($server);
+    }
+
+    public function testMetaReaderConsumesUnwantedEmptyValueBodyToKeepSocketInSync(): void
+    {
+        [$connection, $server] = $this->socketConnection("VA 0 f0\r\n\r\nHD\r\n");
+
+        $reader = new MetaReader($connection);
+        $first = $reader->readOne(false);
+        self::assertSame('VA', $first->code);
+        self::assertNull($first->value);
+
+        self::assertSame('HD', $reader->readOne(false)->code);
+
+        fclose($server);
+    }
+
     public function testMetaReaderArithmeticHandlesNonValueResponses(): void
     {
         [$connection, $server] = $this->socketConnection("NF\r\n");
