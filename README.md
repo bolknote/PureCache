@@ -10,7 +10,7 @@ All implementation code lives under **`PureCache`** and **does not rely on** the
 - Redis-backed client: `PureCache\Redis\RedisClient`
 - Apache Ignite-backed client (native thin client): `PureCache\Ignite\IgniteClient`
 - Multi-backend factory: `PureCache\ClientFactory` (see `PureCache\CacheClient`)
-- Constants (`RES_*`, `OPT_*`, …): `PureCache\MemcachedConstants` (abstract base class). The same names are also available as `MemcachedClient::RES_*` because the client extends that class.
+- Constants (`RES_*`, `OPT_*`, `SERIALIZER_*`, `COMPRESSION_*`, `HASH_*`, `DISTRIBUTION_*`, `GET_*`, `HAVE_*`, …) live on `PureCache\MemcachedConstants` and are inherited by **every** client class. Use whichever form reads best — `MemcachedClient::OPT_PREFIX_KEY`, `RedisClient::OPT_PREFIX_KEY`, `IgniteClient::OPT_PREFIX_KEY`, and `MemcachedConstants::OPT_PREFIX_KEY` all refer to the same value. Numeric values are pinned to PECL and verified in CI (`PeclParityTest::testEveryPeclConstantMatchesPureCache`).
 
 All three clients share the same PECL-shaped API — only the class and transport differ.
 
@@ -21,8 +21,22 @@ use PureCache\Memcached\MemcachedClient;
 
 $m = new MemcachedClient();
 $m->addServer('127.0.0.1', 11211);
-$m->set('k', 'v', 60);
-if ($m->getResultCode() === MemcachedClient::RES_SUCCESS) { /* … */ }
+
+// Every PECL Memcached::* constant is inherited by the client, so
+// MemcachedClient::OPT_* / SERIALIZER_* / RES_* drop straight into code
+// that used to reference the global \Memcached class.
+$m->setOption(MemcachedClient::OPT_PREFIX_KEY, 'app:');
+$m->setOption(MemcachedClient::OPT_COMPRESSION, true);
+$m->setOption(MemcachedClient::OPT_COMPRESSION_TYPE, MemcachedClient::COMPRESSION_ZSTD);
+$m->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_IGBINARY);
+$m->setOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE, true);
+
+$m->set('k', ['v' => 1], 60);
+
+$value = $m->get('k', null, $cas);          // $cas is populated by reference
+$m->cas($cas, 'k', ['v' => 2]);
+
+if ($m->getResultCode() === MemcachedClient::RES_NOTFOUND) { /* … */ }
 ```
 
 ### Redis (RESP2 + Lua for atomic ops)
