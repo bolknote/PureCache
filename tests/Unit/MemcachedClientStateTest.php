@@ -542,16 +542,11 @@ final class MemcachedClientStateTest extends TestCase
     {
         $client = new MemcachedClient();
 
-        self::assertFalse($client->setEncodingKey('secret'));
+        self::assertFalse($client->setSaslAuthData('user', 'pass'));
         self::assertSame(MemcachedClient::RES_NOT_SUPPORTED, $client->getResultCode());
-        self::assertSame('encoding not supported', $client->getResultMessage());
-        self::assertSame('encoding not supported', $client->getLastErrorMessage());
         self::assertSame(MemcachedClient::RES_NOT_SUPPORTED, $client->getLastErrorCode());
         self::assertSame(0, $client->getLastErrorErrno());
         self::assertFalse($client->getLastDisconnectedServer());
-
-        self::assertFalse($client->setSaslAuthData('user', 'pass'));
-        self::assertSame(MemcachedClient::RES_NOT_SUPPORTED, $client->getResultCode());
     }
 
     public function testNegativeIncrementOffsetReturnsFalseAndSetsInvalidArguments(): void

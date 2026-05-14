@@ -278,6 +278,13 @@ final class MemcachedClient extends AbstractCacheClient
             return false;
         }
 
+        if ($mode->isConcatenation() && null !== $this->encodingContext()) {
+            trigger_error('cannot append/prepend with encoding key set', \E_USER_WARNING);
+            $this->setResult(self::RES_NOTSTORED);
+
+            return false;
+        }
+
         $cmd = $this->prepareStoreCommand($key, $value, $expiration, $mode, $serverKey, $casToken);
         if (false === $cmd) {
             return false;
@@ -681,6 +688,7 @@ final class MemcachedClient extends AbstractCacheClient
                 $core->compressionThreshold,
                 $core->compressionFactor,
                 $this->optionInt(self::OPT_USER_FLAGS, -1),
+                $this->encodingContext(),
             );
         } catch (\Throwable) {
             $this->setResult(self::RES_PAYLOAD_FAILURE);
@@ -768,6 +776,7 @@ final class MemcachedClient extends AbstractCacheClient
             $reader,
             $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
             $this->optionBool(self::OPT_ALLOW_SERIALIZED_CLASSES, false),
+            $this->encodingContext(),
         );
         if ($decoded->isFailure()) {
             $this->setResult($decoded->errorCode ?? self::RES_FAILURE, $decoded->errorMessage);

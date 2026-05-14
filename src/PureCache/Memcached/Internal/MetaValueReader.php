@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PureCache\Memcached\Internal;
 
+use PureCache\Internal\EncodingContext;
 use PureCache\Internal\ValueCodec;
 use PureCache\MemcachedConstants;
 
@@ -16,8 +17,12 @@ final class MetaValueReader
     {
     }
 
-    public static function read(MetaReader $reader, int $serializer, bool $allowSerializedClasses = false): DecodedMetaValue
-    {
+    public static function read(
+        MetaReader $reader,
+        int $serializer,
+        bool $allowSerializedClasses = false,
+        ?EncodingContext $encoding = null,
+    ): DecodedMetaValue {
         $result = $reader->readOne(true);
         $wire = $result->wireErrorResultCode();
         if (null !== $wire) {
@@ -33,7 +38,13 @@ final class MetaValueReader
         }
 
         try {
-            $value = ValueCodec::decode($result->value, (int) ($result->getToken('f') ?? '0'), $serializer, $allowSerializedClasses);
+            $value = ValueCodec::decode(
+                $result->value,
+                (int) ($result->getToken('f') ?? '0'),
+                $serializer,
+                $allowSerializedClasses,
+                $encoding,
+            );
         } catch (\Exception) {
             return DecodedMetaValue::failure(MemcachedConstants::RES_PAYLOAD_FAILURE);
         }

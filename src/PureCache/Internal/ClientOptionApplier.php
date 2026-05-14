@@ -73,6 +73,10 @@ final class ClientOptionApplier
             return self::applyCompressionLevel($core, $option, $value);
         }
 
+        if (MemcachedConstants::OPT_ENCODING_MODE === $option) {
+            return self::applyEncodingMode($core, $option, $value);
+        }
+
         if (self::isTimeoutOption($option)) {
             return self::applyTimeout($core, $option, $value, $env);
         }
@@ -206,6 +210,38 @@ final class ClientOptionApplier
         }
 
         $core->options[$option] = $level;
+
+        return ClientOptionResult::success();
+    }
+
+    /**
+     * Encryption mode flips the algorithm used by every subsequent
+     * {@code setEncodingKey()} call. An already-set encoding context is
+     * cleared so the next encoded value uses the new format — keeping
+     * leftover state under an incompatible mode would silently corrupt
+     * writes. AEAD requires {@code ext-openssl}; libmemcached compat also
+     * relies on openssl but is the safer default to keep enabled on hosts
+     * that already have the extension available.
+     */
+    private static function applyEncodingMode(ClientCoreState $core, int $option, mixed $value): ClientOptionResult
+    {
+        $mode = ClientOptions::intValue($value);
+        if (null === $mode || !\in_array($mode, [
+            MemcachedConstants::ENCODING_MODE_LIBMEMCACHED,
+            MemcachedConstants::ENCODING_MODE_AEAD,
+        ], true)) {
+            return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
+        }
+
+        if (!\extension_loaded('openssl')) {
+            return ClientOptionResult::failure(
+                MemcachedConstants::RES_NOT_SUPPORTED,
+                'encoding modes require ext-openssl',
+            );
+        }
+
+        $core->options[$option] = $mode;
+        $core->encoding = null;
 
         return ClientOptionResult::success();
     }

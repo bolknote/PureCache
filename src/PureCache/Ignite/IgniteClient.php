@@ -116,7 +116,12 @@ final class IgniteClient extends AbstractCacheClient
         return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($getFlags): mixed {
             $entry = $this->readEntry($pk, $idx);
             if (!$entry instanceof CacheEntry) {
-                $this->setResult(self::RES_NOTFOUND);
+                // {@see readEntry()} sets RES_PAYLOAD_FAILURE when the value
+                // codec rejects a hit (e.g. decryption/auth-tag mismatch);
+                // RES_NOTFOUND would mask the crypto error as a plain miss.
+                if (self::RES_PAYLOAD_FAILURE !== $this->getResultCode()) {
+                    $this->setResult(self::RES_NOTFOUND);
+                }
 
                 return false;
             }
@@ -222,6 +227,13 @@ final class IgniteClient extends AbstractCacheClient
         $this->pristine = false;
         if ($mode->isConcatenation() && $this->optionBool(self::OPT_COMPRESSION, true)) {
             trigger_error('cannot append/prepend with compression turned on', \E_USER_WARNING);
+            $this->setResult(self::RES_NOTSTORED);
+
+            return false;
+        }
+
+        if ($mode->isConcatenation() && null !== $this->encodingContext()) {
+            trigger_error('cannot append/prepend with encoding key set', \E_USER_WARNING);
             $this->setResult(self::RES_NOTSTORED);
 
             return false;
@@ -728,12 +740,19 @@ final class IgniteClient extends AbstractCacheClient
         }
 
         [$cas, $flags, $payload] = $decoded;
-        $value = ValueCodec::decode(
-            $payload,
-            $flags,
-            $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
-            $this->optionBool(self::OPT_ALLOW_SERIALIZED_CLASSES, false),
-        );
+        try {
+            $value = ValueCodec::decode(
+                $payload,
+                $flags,
+                $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
+                $this->optionBool(self::OPT_ALLOW_SERIALIZED_CLASSES, false),
+                $this->encodingContext(),
+            );
+        } catch (\Throwable) {
+            $this->setResult(self::RES_PAYLOAD_FAILURE);
+
+            return null;
+        }
 
         return new CacheEntry($value, $this->casValue((string) $cas), ValueCodec::getUserFlags($flags));
     }
@@ -807,6 +826,7 @@ final class IgniteClient extends AbstractCacheClient
             $st->compressionThreshold,
             $st->compressionFactor,
             $this->optionInt(self::OPT_USER_FLAGS, -1),
+            $this->encodingContext(),
         );
     }
 

@@ -52,6 +52,7 @@ final class ClientOptions
             MemcachedConstants::OPT_ITEM_SIZE_LIMIT => 0,
             MemcachedConstants::OPT_NUMBER_OF_REPLICAS => 0,
             MemcachedConstants::OPT_RANDOMIZE_REPLICA_READ => false,
+            MemcachedConstants::OPT_ENCODING_MODE => MemcachedConstants::ENCODING_MODE_LIBMEMCACHED,
         ];
     }
 

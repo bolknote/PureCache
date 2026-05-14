@@ -8,6 +8,7 @@ use PureCache\Internal\CacheEntry;
 use PureCache\Internal\ClientCoreState;
 use PureCache\Internal\ClientOptionApplier;
 use PureCache\Internal\ClientOptionResult;
+use PureCache\Internal\EncodingContext;
 use PureCache\Internal\KeyFormatter;
 use PureCache\Internal\OptionEnvironment;
 use PureCache\Internal\ServerEndpoint;
@@ -462,6 +463,19 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     #[\Override]
     public function getOption(int $option): mixed
     {
+        // PECL maps OPT_LIBKETAMA_HASH onto MEMCACHED_BEHAVIOR_KETAMA_HASH,
+        // whose setter writes to the same hashkit field that backs
+        // MEMCACHED_BEHAVIOR_HASH. Empirically the net effect is that
+        // getOption(OPT_LIBKETAMA_HASH) always tracks OPT_HASH — including
+        // after OPT_LIBKETAMA_COMPATIBLE toggles that cascade OPT_HASH to
+        // MD5 — while setOption(OPT_LIBKETAMA_HASH, …) leaves no observable
+        // state behind. Folding the read into OPT_HASH here keeps that
+        // read-alias contract centralised so the applier never has to
+        // remember to write through to two slots.
+        if (self::OPT_LIBKETAMA_HASH === $option) {
+            $option = self::OPT_HASH;
+        }
+
         $value = $this->core->options[$option] ?? null;
         if (\is_bool($value) && $this->optionReturnsIntegerBoolean($option)) {
             return $value ? 1 : 0;
@@ -519,11 +533,45 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     }
 
     #[\Override]
-    public function setEncodingKey(string $key): bool
+    public function setEncodingKey(#[\SensitiveParameter] string $key): bool
     {
-        $this->setResult(self::RES_NOT_SUPPORTED, 'encoding not supported');
+        if ('' === $key) {
+            $this->setResult(self::RES_INVALID_ARGUMENTS, 'encoding key must not be empty');
 
-        return false;
+            return false;
+        }
+
+        if (!\extension_loaded('openssl')) {
+            $this->setResult(self::RES_NOT_SUPPORTED, 'encoding requires ext-openssl');
+
+            return false;
+        }
+
+        $mode = $this->optionInt(self::OPT_ENCODING_MODE, self::ENCODING_MODE_LIBMEMCACHED);
+        $ctx = EncodingContext::fromUserKey($mode, $key);
+        if (null === $ctx) {
+            $this->setResult(self::RES_INVALID_ARGUMENTS, 'invalid encoding mode');
+
+            return false;
+        }
+
+        $this->core->encoding = $ctx;
+        $this->setResult(self::RES_SUCCESS);
+
+        return true;
+    }
+
+    /**
+     * Encoding context currently in force, or {@code null} when
+     * {@link CacheClient::setEncodingKey()} has not been called (or was last
+     * called with an unsupported mode). Backends pipe this value into
+     * {@see \PureCache\Internal\ValueCodec::encode()} /
+     * {@see \PureCache\Internal\ValueCodec::decode()} so encryption stays a
+     * pure value-pipeline concern and never leaks into protocol handling.
+     */
+    protected function encodingContext(): ?EncodingContext
+    {
+        return $this->core->encoding;
     }
 
     #[\Override]

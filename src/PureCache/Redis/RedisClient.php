@@ -96,7 +96,13 @@ final class RedisClient extends AbstractCacheClient
         return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($getFlags): mixed {
             $entry = $this->readEntry($pk, $idx);
             if (!$entry instanceof CacheEntry) {
-                $this->setResult(self::RES_NOTFOUND);
+                // {@see cacheEntryFromHash()} already sets RES_PAYLOAD_FAILURE
+                // when decryption/deserialization throws; we mustn't overwrite
+                // that with RES_NOTFOUND, otherwise crypto misconfigurations
+                // would look like ordinary cache misses to the caller.
+                if (self::RES_PAYLOAD_FAILURE !== $this->getResultCode()) {
+                    $this->setResult(self::RES_NOTFOUND);
+                }
 
                 return false;
             }
@@ -214,6 +220,13 @@ final class RedisClient extends AbstractCacheClient
             return false;
         }
 
+        if ($mode->isConcatenation() && null !== $this->encodingContext()) {
+            trigger_error('cannot append/prepend with encoding key set', \E_USER_WARNING);
+            $this->setResult(self::RES_NOTSTORED);
+
+            return false;
+        }
+
         $pk = $this->prefixedKey($key);
         if (!$this->checkKeyInternal($pk)) {
             $this->setResult(self::RES_BAD_KEY_PROVIDED);
@@ -246,6 +259,7 @@ final class RedisClient extends AbstractCacheClient
                 $st->compressionThreshold,
                 $st->compressionFactor,
                 $this->optionInt(self::OPT_USER_FLAGS, -1),
+                $this->encodingContext(),
             );
         } catch (\Throwable) {
             $this->setResult(self::RES_PAYLOAD_FAILURE);
@@ -329,6 +343,7 @@ final class RedisClient extends AbstractCacheClient
                     $st->compressionThreshold,
                     $st->compressionFactor,
                     $this->optionInt(self::OPT_USER_FLAGS, -1),
+                    $this->encodingContext(),
                 );
             } catch (\Throwable) {
                 $this->setResult(self::RES_PAYLOAD_FAILURE);
@@ -813,12 +828,19 @@ final class RedisClient extends AbstractCacheClient
         }
 
         $flagsInt = (int) $h['f'];
-        $value = ValueCodec::decode(
-            $h['d'],
-            $flagsInt,
-            $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
-            $this->optionBool(self::OPT_ALLOW_SERIALIZED_CLASSES, false),
-        );
+        try {
+            $value = ValueCodec::decode(
+                $h['d'],
+                $flagsInt,
+                $this->optionInt(self::OPT_SERIALIZER, self::SERIALIZER_PHP),
+                $this->optionBool(self::OPT_ALLOW_SERIALIZED_CLASSES, false),
+                $this->encodingContext(),
+            );
+        } catch (\Throwable) {
+            $this->setResult(self::RES_PAYLOAD_FAILURE);
+
+            return null;
+        }
 
         return new CacheEntry($value, $this->casValue($h['c']), ValueCodec::getUserFlags($flagsInt));
     }

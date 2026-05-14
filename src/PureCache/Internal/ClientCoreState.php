@@ -41,6 +41,14 @@ abstract class ClientCoreState
 
     public ?string $persistentId = null;
 
+    /**
+     * Active encoding/encryption context attached by
+     * {@see \PureCache\AbstractCacheClient::setEncodingKey()}; {@code null}
+     * means encryption is off and {@see ValueCodec} runs the plain
+     * serialize→compress pipeline.
+     */
+    public ?EncodingContext $encoding = null;
+
     protected function initDefaults(?string $persistentId): void
     {
         $this->persistentId = $persistentId;
