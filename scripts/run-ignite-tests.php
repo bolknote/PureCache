@@ -65,11 +65,11 @@ if (is_string($envHost) && '' !== $envHost && is_string($envPort) && '' !== $env
         $igniteInstance = startIgniteServer($binary, $configPath, $cacheDir);
         $host = IGNITE_BIND_HOST;
 
-        if (!waitForTcpServer($host, $port, IGNITE_STARTUP_TIMEOUT_USEC, $igniteInstance['process'], $igniteInstance['pipes'][2])) {
-            $stderr = stream_get_contents($igniteInstance['pipes'][2]);
+        if (!waitForTcpServer($host, $port, IGNITE_STARTUP_TIMEOUT_USEC, $igniteInstance['process'])) {
             fwrite(\STDERR, "Apache Ignite did not become ready on {$host}:{$port} within ".(IGNITE_STARTUP_TIMEOUT_USEC / 1_000_000)."s.\n");
-            if (is_string($stderr) && '' !== $stderr) {
-                fwrite(\STDERR, $stderr);
+            $log = @file_get_contents($igniteInstance['logFile']);
+            if (is_string($log) && '' !== $log) {
+                fwrite(\STDERR, $log);
             }
 
             $cleanup();
@@ -129,7 +129,7 @@ function ensureIgniteBinary(string $cacheDir, string $version): string
         return $candidate;
     }
 
-    if (!is_dir($cacheDir) && !mkdir($cacheDir, 0755, true) && !is_dir($cacheDir)) {
+    if (!is_dir($cacheDir) && !mkdir($cacheDir, 0o755, true) && !is_dir($cacheDir)) {
         throw new RuntimeException("Cannot create cache directory {$cacheDir}.");
     }
 
@@ -139,7 +139,7 @@ function ensureIgniteBinary(string $cacheDir, string $version): string
     }
 
     extractIgniteArchive($archive, $cacheDir);
-    @chmod($candidate, 0755);
+    @chmod($candidate, 0o755);
     if (!is_executable($candidate)) {
         throw new RuntimeException("Extraction completed but {$candidate} is not executable.");
     }
@@ -208,52 +208,66 @@ function extractIgniteArchive(string $archive, string $cacheDir): void
     }
 }
 
+function writeIgniteLoggingConfig(string $cacheDir): string
+{
+    $path = $cacheDir.'/logging.properties';
+    $contents = "handlers=\nhandlers=java.util.logging.ConsoleHandler\n".
+        "java.util.logging.ConsoleHandler.level=SEVERE\n".
+        "java.util.logging.ConsoleHandler.formatter=java.util.logging.SimpleFormatter\n".
+        ".level=SEVERE\norg.apache.ignite.level=SEVERE\n";
+    if (false === file_put_contents($path, $contents)) {
+        throw new RuntimeException("Cannot write logging.properties to {$path}.");
+    }
+
+    return $path;
+}
+
 function writeIgniteConfig(string $cacheDir, string $host, int $port): string
 {
-    if (!is_dir($cacheDir) && !mkdir($cacheDir, 0755, true) && !is_dir($cacheDir)) {
+    if (!is_dir($cacheDir) && !mkdir($cacheDir, 0o755, true) && !is_dir($cacheDir)) {
         throw new RuntimeException("Cannot create cache directory {$cacheDir}.");
     }
 
     $configPath = $cacheDir.'/ignite-test-'.$port.'.xml';
     $xml = <<<XML
-<?xml version="1.0" encoding="UTF-8"?>
-<beans xmlns="http://www.springframework.org/schema/beans"
-       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd">
-    <bean id="ignite.cfg" class="org.apache.ignite.configuration.IgniteConfiguration">
-        <property name="gridLogger">
-            <bean class="org.apache.ignite.logger.java.JavaLogger"/>
-        </property>
-        <property name="metricsLogFrequency" value="0"/>
-        <property name="clientConnectorConfiguration">
-            <bean class="org.apache.ignite.configuration.ClientConnectorConfiguration">
-                <property name="host" value="{$host}"/>
-                <property name="port" value="{$port}"/>
-                <property name="portRange" value="0"/>
-            </bean>
-        </property>
-        <property name="discoverySpi">
-            <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
-                <property name="localAddress" value="{$host}"/>
-                <property name="ipFinder">
-                    <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.vm.TcpDiscoveryVmIpFinder">
-                        <property name="addresses">
-                            <list>
-                                <value>{$host}:47500..47509</value>
-                            </list>
+        <?xml version="1.0" encoding="UTF-8"?>
+        <beans xmlns="http://www.springframework.org/schema/beans"
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd">
+            <bean id="ignite.cfg" class="org.apache.ignite.configuration.IgniteConfiguration">
+                <property name="gridLogger">
+                    <bean class="org.apache.ignite.logger.java.JavaLogger"/>
+                </property>
+                <property name="metricsLogFrequency" value="0"/>
+                <property name="clientConnectorConfiguration">
+                    <bean class="org.apache.ignite.configuration.ClientConnectorConfiguration">
+                        <property name="host" value="{$host}"/>
+                        <property name="port" value="{$port}"/>
+                        <property name="portRange" value="0"/>
+                    </bean>
+                </property>
+                <property name="discoverySpi">
+                    <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+                        <property name="localAddress" value="{$host}"/>
+                        <property name="ipFinder">
+                            <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.vm.TcpDiscoveryVmIpFinder">
+                                <property name="addresses">
+                                    <list>
+                                        <value>{$host}:47500..47509</value>
+                                    </list>
+                                </property>
+                            </bean>
                         </property>
                     </bean>
                 </property>
+                <property name="communicationSpi">
+                    <bean class="org.apache.ignite.spi.communication.tcp.TcpCommunicationSpi">
+                        <property name="localAddress" value="{$host}"/>
+                    </bean>
+                </property>
             </bean>
-        </property>
-        <property name="communicationSpi">
-            <bean class="org.apache.ignite.spi.communication.tcp.TcpCommunicationSpi">
-                <property name="localAddress" value="{$host}"/>
-            </bean>
-        </property>
-    </bean>
-</beans>
-XML;
+        </beans>
+        XML;
 
     if (false === file_put_contents($configPath, $xml)) {
         throw new RuntimeException("Cannot write Ignite config to {$configPath}.");
@@ -268,6 +282,10 @@ XML;
 function startIgniteServer(string $binary, string $configPath, string $cacheDir): array
 {
     $igniteHome = dirname($binary, 2);
+    $loggingConfig = writeIgniteLoggingConfig($cacheDir);
+    $logFile = $cacheDir.'/ignite-server.log';
+    @unlink($logFile);
+
     $jvmOpts = implode(' ', [
         '-Xms256m',
         '-Xmx512m',
@@ -276,6 +294,7 @@ function startIgniteServer(string $binary, string $configPath, string $cacheDir)
         '-DIGNITE_NO_ASCII=true',
         '-DIGNITE_PERFORMANCE_SUGGESTIONS_DISABLED=true',
         '-DIGNITE_WORK_DIR='.escapeshellarg($cacheDir.'/work'),
+        '-Djava.util.logging.config.file='.escapeshellarg($loggingConfig),
         '--add-opens=java.base/jdk.internal.access=ALL-UNNAMED',
         '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED',
         '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED',
@@ -304,13 +323,15 @@ function startIgniteServer(string $binary, string $configPath, string $cacheDir)
     $env['IGNITE_HOME'] = $igniteHome;
     $env['JVM_OPTS'] = trim(($env['JVM_OPTS'] ?? '').' '.$jvmOpts);
 
+    $bash = findExecutable('bash') ?? '/bin/bash';
+
     $pipes = [];
     $process = proc_open(
-        ['/bin/sh', $binary, $configPath],
+        [$bash, $binary, $configPath],
         [
             ['file', '/dev/null', 'r'],
-            ['pipe', 'w'],
-            ['pipe', 'w'],
+            ['file', $logFile, 'w'],
+            ['file', $logFile, 'a'],
         ],
         $pipes,
         $igniteHome,
@@ -321,10 +342,7 @@ function startIgniteServer(string $binary, string $configPath, string $cacheDir)
         throw new RuntimeException('proc_open(ignite.sh) failed.');
     }
 
-    stream_set_blocking($pipes[1], false);
-    stream_set_blocking($pipes[2], false);
-
-    return ['process' => $process, 'pipes' => $pipes];
+    return ['process' => $process, 'pipes' => $pipes, 'logFile' => $logFile];
 }
 
 /**
@@ -334,19 +352,33 @@ function startIgniteServer(string $binary, string $configPath, string $cacheDir)
 function stopIgniteServer($process, array $pipes): void
 {
     if (is_resource($process)) {
+        // ignite.sh does NOT exec the JVM; it runs `"$JAVA" ... "$@"` inside a `while`
+        // loop, so killing only the wrapper would leave the actual Apache Ignite JVM
+        // as an orphan TCP listener. Walk the full descendant tree and signal every
+        // child before terminating the wrapper.
+        $status = proc_get_status($process);
+        $wrapperPid = is_int($status['pid'] ?? null) ? $status['pid'] : 0;
+        if ($wrapperPid > 0) {
+            signalProcessTree($wrapperPid, \SIGTERM);
+        }
+
         proc_terminate($process);
+
         $deadline = microtime(true) + IGNITE_SHUTDOWN_TIMEOUT_SEC;
         do {
             $status = proc_get_status($process);
-            if (!$status['running']) {
+            if (!$status['running'] && ($wrapperPid <= 0 || !processTreeHasSurvivors($wrapperPid))) {
                 break;
             }
 
             usleep(POLL_INTERVAL_USEC);
         } while (microtime(true) < $deadline);
 
-        $status = proc_get_status($process);
-        if ($status['running']) {
+        if ($wrapperPid > 0 && processTreeHasSurvivors($wrapperPid)) {
+            signalProcessTree($wrapperPid, \SIGKILL);
+        }
+
+        if (proc_get_status($process)['running']) {
             proc_terminate($process, 9);
         }
 
@@ -358,6 +390,64 @@ function stopIgniteServer($process, array $pipes): void
             fclose($pipe);
         }
     }
+}
+
+/**
+ * @return list<int>
+ */
+function collectDescendantPids(int $rootPid): array
+{
+    $queue = [$rootPid];
+    $seen = [];
+    $descendants = [];
+    while ([] !== $queue) {
+        $pid = array_shift($queue);
+        if (isset($seen[$pid])) {
+            continue;
+        }
+        $seen[$pid] = true;
+
+        $output = [];
+        $status = -1;
+        @exec('pgrep -P '.escapeshellarg((string) $pid).' 2>/dev/null', $output, $status);
+        foreach ($output as $line) {
+            $child = (int) trim($line);
+            if ($child > 0 && $child !== $pid) {
+                $descendants[] = $child;
+                $queue[] = $child;
+            }
+        }
+    }
+
+    return array_reverse($descendants);
+}
+
+function signalProcessTree(int $rootPid, int $signal): void
+{
+    $pids = collectDescendantPids($rootPid);
+    $pids[] = $rootPid;
+    foreach ($pids as $pid) {
+        if (function_exists('posix_kill')) {
+            @posix_kill($pid, $signal);
+        } else {
+            @passthroughCommand(['kill', '-'.$signal, (string) $pid]);
+        }
+    }
+}
+
+function processTreeHasSurvivors(int $rootPid): bool
+{
+    foreach (collectDescendantPids($rootPid) as $pid) {
+        if (function_exists('posix_kill')) {
+            if (@posix_kill($pid, 0)) {
+                return true;
+            }
+        } elseif (0 === passthroughCommand(['kill', '-0', (string) $pid])) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function isJavaAvailable(): bool
