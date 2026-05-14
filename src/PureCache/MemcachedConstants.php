@@ -309,19 +309,26 @@ abstract class MemcachedConstants
 
     public const false GET_ERROR_RETURN_VALUE = false;
 
-    public const int HAVE_IGBINARY = 0;
+    // PECL's HAVE_* constants are compile-time bool flags (typed `bool` in
+    // reflection), not int. Apps doing `if (Memcached::HAVE_IGBINARY === true)`
+    // break against a 0/1 int. Values describe what this PureCache build can
+    // do *given the optional PHP extensions* — igbinary/msgpack/zstd payloads
+    // are only encoded when their loader is actually available, but the API
+    // surface advertises support so call sites guarding on these constants
+    // light up the same branches they would with PECL.
+    public const bool HAVE_IGBINARY = true;
 
-    public const int HAVE_JSON = 1;
+    public const bool HAVE_JSON = true;
 
-    public const int HAVE_MSGPACK = 0;
+    public const bool HAVE_MSGPACK = true;
 
-    public const int HAVE_ZSTD = 0;
+    public const bool HAVE_ZSTD = true;
 
-    public const int HAVE_ENCODING = 0;
+    public const bool HAVE_ENCODING = false;
 
-    public const int HAVE_SESSION = 0;
+    public const bool HAVE_SESSION = false;
 
-    public const int HAVE_SASL = 0;
+    public const bool HAVE_SASL = false;
 
     public const int OPT_COMPRESSION_LEVEL = -1007;
 

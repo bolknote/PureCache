@@ -30,43 +30,54 @@ final class PeclParityTest extends TestCase
         }
     }
 
-    public function testSupportedConstantsMatchPecl(): void
+    public function testEveryPeclConstantMatchesPureCache(): void
     {
-        $constants = [
-            'RES_SUCCESS',
-            'RES_FAILURE',
-            'RES_NOTFOUND',
-            'RES_NOTSTORED',
-            'RES_DATA_EXISTS',
-            'RES_SOME_ERRORS',
-            'RES_BAD_KEY_PROVIDED',
-            'RES_INVALID_ARGUMENTS',
-            'GET_EXTENDED',
-            'GET_PRESERVE_ORDER',
-            'OPT_COMPRESSION',
-            'OPT_SERIALIZER',
-            'OPT_PREFIX_KEY',
-            'OPT_HASH_WITH_PREFIX_KEY',
-            'OPT_NO_BLOCK',
-            'OPT_TCP_KEEPALIVE',
-            'OPT_SOCKET_SEND_SIZE',
-            'OPT_SOCKET_RECV_SIZE',
-            'OPT_USER_FLAGS',
-            'SERIALIZER_PHP',
-            'SERIALIZER_IGBINARY',
+        $pecl = (new \ReflectionClass(\Memcached::class))->getConstants();
+        $pure = (new \ReflectionClass(MemcachedClient::class))->getConstants();
+
+        // LIBMEMCACHED_VERSION_HEX is a compile-time stamp baked into
+        // ext-memcached from whatever libmemcached the PECL package was built
+        // against; the pure-PHP client has no library to track so it pins a
+        // documented value and is intentionally not parity-checked.
+        $skipValueChecks = ['LIBMEMCACHED_VERSION_HEX'];
+
+        // HAVE_* are compile-time bool flags in PECL that reflect how the C
+        // extension was built (whether libmemcached was linked with SASL, SSL,
+        // protocol support, etc.). The pure-PHP build advertises support
+        // independently from PECL's compile flags, so we check the *type* is
+        // bool (PECL contract) but not the specific true/false value.
+        $boolTypeOnly = [
+            'HAVE_IGBINARY', 'HAVE_JSON', 'HAVE_MSGPACK', 'HAVE_ZSTD',
+            'HAVE_ENCODING', 'HAVE_SESSION', 'HAVE_SASL',
         ];
 
-        foreach ($constants as $constant) {
-            $peclFqn = 'Memcached::'.$constant;
-            $pureFqn = MemcachedClient::class.'::'.$constant;
-
-            if (!\defined($peclFqn)) {
+        $missing = [];
+        $mismatches = [];
+        foreach ($pecl as $name => $value) {
+            if (!\array_key_exists($name, $pure)) {
+                $missing[] = $name;
                 continue;
             }
 
-            self::assertTrue(\defined($pureFqn), $pureFqn.' is not defined');
-            self::assertSame(\constant($peclFqn), \constant($pureFqn), $constant);
+            if (\in_array($name, $skipValueChecks, true)) {
+                continue;
+            }
+
+            if (\in_array($name, $boolTypeOnly, true)) {
+                if (!\is_bool($pure[$name])) {
+                    $mismatches[] = \sprintf('%s: PECL is bool, PureCache=%s (%s)', $name, var_export($pure[$name], true), get_debug_type($pure[$name]));
+                }
+
+                continue;
+            }
+
+            if ($pure[$name] !== $value) {
+                $mismatches[] = \sprintf('%s: PECL=%s, PureCache=%s', $name, var_export($value, true), var_export($pure[$name], true));
+            }
         }
+
+        self::assertSame([], $missing, 'PECL constants missing from PureCache\MemcachedConstants: '.implode(', ', $missing));
+        self::assertSame([], $mismatches, "Constant value/type drift vs PECL Memcached:\n".implode("\n", $mismatches));
     }
 
     public function testSupportedOptionSetGetParity(): void
