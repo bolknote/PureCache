@@ -59,4 +59,31 @@ final class Expiration
 
         return $delta;
     }
+
+    /**
+     * Normalises a memcached-style expiration value into an absolute Unix
+     * timestamp. Used by backends that store an "expires at" field inside
+     * the cached value itself and do lazy expiration on read (e.g. the
+     * Ignite thin-client backend, where the protocol does not expose a
+     * per-entry TTL field on every write opcode).
+     *
+     * @return int {@code 0} → no expiry; otherwise a Unix timestamp at which
+     *             the entry becomes stale. Returns {@code 1} (already
+     *             expired) if the caller passed an absolute timestamp in
+     *             the past — matching memcached's "stale on arrival"
+     *             semantics rather than silently extending the TTL.
+     */
+    public static function toAbsoluteUnixTime(int $expiration, ?int $now = null): int
+    {
+        if ($expiration <= 0) {
+            return 0;
+        }
+
+        $reference = $now ?? time();
+        if ($expiration <= self::MEMCACHED_RELATIVE_LIMIT_SECONDS) {
+            return $reference + $expiration;
+        }
+
+        return $expiration > $reference ? $expiration : 1;
+    }
 }

@@ -38,6 +38,8 @@ final class IgniteProtocol
 
     public const int OP_CACHE_PUT_IF_ABSENT = 1002;
 
+    public const int OP_CACHE_GET_ALL = 1003;
+
     public const int OP_CACHE_REPLACE = 1009;
 
     public const int OP_CACHE_REPLACE_IF_EQUALS = 1010;

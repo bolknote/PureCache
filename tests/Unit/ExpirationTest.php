@@ -47,4 +47,34 @@ final class ExpirationTest extends TestCase
 
         self::assertSame(1, Expiration::toRelativeSeconds($cutoff + 1, $now));
     }
+
+    public function testToAbsoluteUnixTimeReturnsZeroForNoExpiry(): void
+    {
+        self::assertSame(0, Expiration::toAbsoluteUnixTime(0));
+        self::assertSame(0, Expiration::toAbsoluteUnixTime(-1));
+        self::assertSame(0, Expiration::toAbsoluteUnixTime(\PHP_INT_MIN));
+    }
+
+    public function testToAbsoluteUnixTimeAddsRelativeSecondsToNow(): void
+    {
+        $now = 1_700_000_000;
+        self::assertSame($now + 60, Expiration::toAbsoluteUnixTime(60, $now));
+        self::assertSame(
+            $now + Expiration::MEMCACHED_RELATIVE_LIMIT_SECONDS,
+            Expiration::toAbsoluteUnixTime(Expiration::MEMCACHED_RELATIVE_LIMIT_SECONDS, $now),
+        );
+    }
+
+    public function testToAbsoluteUnixTimeKeepsFutureAbsoluteTimestamp(): void
+    {
+        $now = 1_700_000_000;
+        $future = $now + 7_200_000;
+        self::assertSame($future, Expiration::toAbsoluteUnixTime($future, $now));
+    }
+
+    public function testToAbsoluteUnixTimeReportsPastAbsoluteAsImmediate(): void
+    {
+        $now = 1_700_000_000;
+        self::assertSame(1, Expiration::toAbsoluteUnixTime($now - 1, $now));
+    }
 }

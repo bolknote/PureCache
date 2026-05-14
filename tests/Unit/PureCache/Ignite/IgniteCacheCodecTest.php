@@ -11,9 +11,10 @@ use PureCache\Ignite\Internal\IgniteWire;
 
 final class IgniteCacheCodecTest extends TestCase
 {
-    public function testWrapperRoundTripsCasAndPayload(): void
+    public function testWrapperRoundTripsCasFlagsExpireAtAndPayload(): void
     {
-        $bytes = IgniteCacheCodec::encodeWrapper(42, 0x10A0, 'hello');
+        $expireAt = 1_700_000_000;
+        $bytes = IgniteCacheCodec::encodeWrapper(42, 0x10A0, $expireAt, 'hello');
 
         self::assertSame(IgniteCacheCodec::WRAPPER_HEADER_SIZE + 5, \strlen($bytes));
 
@@ -21,19 +22,37 @@ final class IgniteCacheCodecTest extends TestCase
         self::assertNotNull($decoded);
         self::assertSame(42, $decoded[0]);
         self::assertSame(0x10A0, $decoded[1]);
-        self::assertSame('hello', $decoded[2]);
+        self::assertSame($expireAt, $decoded[2]);
+        self::assertSame('hello', $decoded[3]);
+    }
+
+    public function testWrapperNeverExpiresSentinelRoundTrips(): void
+    {
+        $bytes = IgniteCacheCodec::encodeWrapper(1, 0, IgniteCacheCodec::NEVER_EXPIRES, 'x');
+
+        $decoded = IgniteCacheCodec::decodeWrapper($bytes);
+        self::assertNotNull($decoded);
+        self::assertSame(IgniteCacheCodec::NEVER_EXPIRES, $decoded[2]);
+        self::assertSame(0, $decoded[2]);
     }
 
     public function testWrapperRoundTripsExtremeCas(): void
     {
-        $decodedMax = IgniteCacheCodec::decodeWrapper(IgniteCacheCodec::encodeWrapper(\PHP_INT_MAX, 0, ''));
+        $decodedMax = IgniteCacheCodec::decodeWrapper(IgniteCacheCodec::encodeWrapper(\PHP_INT_MAX, 0, 0, ''));
         self::assertNotNull($decodedMax);
         self::assertSame(\PHP_INT_MAX, $decodedMax[0]);
-        self::assertSame('', $decodedMax[2]);
+        self::assertSame('', $decodedMax[3]);
 
-        $decodedMin = IgniteCacheCodec::decodeWrapper(IgniteCacheCodec::encodeWrapper(\PHP_INT_MIN, 0, ''));
+        $decodedMin = IgniteCacheCodec::decodeWrapper(IgniteCacheCodec::encodeWrapper(\PHP_INT_MIN, 0, 0, ''));
         self::assertNotNull($decodedMin);
         self::assertSame(\PHP_INT_MIN, $decodedMin[0]);
+    }
+
+    public function testWrapperRoundTripsExtremeExpireAt(): void
+    {
+        $decoded = IgniteCacheCodec::decodeWrapper(IgniteCacheCodec::encodeWrapper(7, 0, \PHP_INT_MAX, ''));
+        self::assertNotNull($decoded);
+        self::assertSame(\PHP_INT_MAX, $decoded[2]);
     }
 
     public function testWrapperRejectsTooShortInputs(): void
@@ -46,6 +65,7 @@ final class IgniteCacheCodecTest extends TestCase
     {
         $header = IgniteWire::packInt64(1)
             .IgniteWire::packInt32(0)
+            .IgniteWire::packInt64(0)
             .IgniteWire::packInt32(1024);
 
         self::assertNull(IgniteCacheCodec::decodeWrapper($header));

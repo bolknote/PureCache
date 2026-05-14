@@ -150,6 +150,45 @@ final class NativeIgniteClient
         return $this->readByteArrayObject($response, 0);
     }
 
+    /**
+     * Batched {@code OP_CACHE_GET_ALL}. Sends every requested key in a single
+     * request frame so multi-get round-trips collapse to one read per shard
+     * instead of one per key. Missing keys are silently dropped from the
+     * returned map — callers should iterate over the original key list and
+     * check {@code isset($result[$key])} to detect misses.
+     *
+     * @param list<string> $keys
+     *
+     * @return array<string, string> map from key → raw byte[] payload
+     */
+    public function cacheGetAll(int $cacheId, array $keys): array
+    {
+        if ([] === $keys) {
+            return [];
+        }
+
+        $body = $this->cacheInfoBody($cacheId).IgniteWire::packInt32(\count($keys));
+        foreach ($keys as $key) {
+            $body .= IgniteCacheCodec::encodeStringObject($key);
+        }
+
+        $response = $this->execute(IgniteProtocol::OP_CACHE_GET_ALL, $body);
+
+        $count = IgniteWire::unpackInt32($response, 0);
+        $offset = 4;
+        $out = [];
+        for ($i = 0; $i < $count; ++$i) {
+            [$key, $offset] = $this->readStringObject($response, $offset);
+            $value = $this->readByteArrayObject($response, $offset);
+            $offset = $this->skipByteArrayObject($response, $offset);
+            if (null !== $value) {
+                $out[$key] = $value;
+            }
+        }
+
+        return $out;
+    }
+
     public function cachePut(int $cacheId, string $key, string $value): void
     {
         $body = $this->cacheKeyBody($cacheId, $key).IgniteCacheCodec::encodeByteArrayObject($value);
