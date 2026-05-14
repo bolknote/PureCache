@@ -29,6 +29,7 @@
     },
     "scripts": {
         "test": "@php scripts/run-phpunit.php --configuration=config/phpunit.xml",
+        "test:no-opt-ext": "@php scripts/run-phpunit-no-opt-ext.php",
         "test:integration": "@php scripts/run-memcached-tests.php",
         "test:parity": "@php scripts/run-memcached-tests.php tests/Parity",
         "test:redis": "@php scripts/run-redis-tests.php",
@@ -43,7 +44,8 @@
             "@phpstan",
             "@cs-check",
             "@rector-check",
-            "@test"
+            "@test",
+            "@test:no-opt-ext"
         ]
     },
     "require-dev": {
