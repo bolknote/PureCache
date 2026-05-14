@@ -69,17 +69,20 @@ final class MemcachedClient extends AbstractCacheClient
     }
 
     /**
-     * Memcached's connection manager handles write buffering for the meta protocol.
+     * Drain every per-connection write buffer. Each per-server flush failure is
+     * attributed to the right shard via {@see recordServerFailure()} so
+     * libmemcached-style {@code OPT_SERVER_FAILURE_LIMIT} /
+     * {@code OPT_SERVER_TIMEOUT_LIMIT} accounting keeps working when
+     * {@code OPT_BUFFER_WRITES} is on. The first captured throwable is
+     * re-thrown so callers (and the existing `try { … } catch (\Throwable …)`
+     * wrappers) still see exactly one exception per flush invocation.
      */
     #[\Override]
     protected function flushNetworkWrites(): void
     {
-        try {
-            $this->core()->conn->flushAllBuffers();
-        } catch (\Throwable $throwable) {
-            $this->recordServerFailure(null, $throwable);
-            throw $throwable;
-        }
+        $this->core()->conn->flushAllBuffers(function (int $serverIndex, \Throwable $throwable): void {
+            $this->recordServerFailure($serverIndex, $throwable);
+        });
     }
 
     private function core(): MemcachedClientCore
@@ -96,7 +99,7 @@ final class MemcachedClient extends AbstractCacheClient
     {
         return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($getFlags): mixed {
             $c = $this->core()->conn->get($idx);
-            $c->write(MetaCommandBuilder::metaGetValue($pk));
+            $this->send($c, MetaCommandBuilder::metaGetValue($pk));
 
             $reader = new MetaReader($c);
             $item = $this->readDecodedMetaValue($reader);
@@ -170,6 +173,13 @@ final class MemcachedClient extends AbstractCacheClient
 
         if ($hadFailure) {
             $this->setResult(self::RES_SOME_ERRORS, $lastError instanceof \Throwable ? $lastError->getMessage() : null);
+        } else {
+            // Either the fan-out was a clean sweep, or the input produced no
+            // shards at all (defensive: getMultiCommon already filters empty
+            // key lists). Either way we must set an explicit success result —
+            // leaving resultCode stale would make every public getMulti caller
+            // observe whichever code the previous operation set.
+            $this->setResult(self::RES_SUCCESS);
         }
 
         return $found;
@@ -270,7 +280,6 @@ final class MemcachedClient extends AbstractCacheClient
     #[\Override]
     protected function doStore(string $key, mixed $value, int $expiration, StoreMode $mode, ?string $serverKey, ?string $casToken): bool
     {
-        $this->pristine = false;
         if (!$this->rejectIncompatibleConcatenation($mode)) {
             return false;
         }
@@ -317,18 +326,26 @@ final class MemcachedClient extends AbstractCacheClient
      * Pipelined {@code setMulti} that honours {@code OPT_NUMBER_OF_REPLICAS}:
      * for each key the prepared meta-set command is appended both to the
      * primary's batch *and* to each replica's batch, then per-server batches
-     * are sent in one shot and drained sequentially. Only the primary slot
-     * decides the per-item outcome — replica failures (network or wire-level)
-     * are recorded against the failure tracker but never surface as
-     * {@code RES_SOME_ERRORS}, matching the single-key fan-out contract
-     * established by {@see writeFanout()}.
+     * are sent in one shot and drained sequentially.
+     *
+     * Per-item outcome is decided exclusively by the primary slot. Replica
+     * reply codes are inspected only to keep the pipelined stream aligned —
+     * any non-{@code HD} reply or network exception on a replica is recorded
+     * against the failure tracker (so {@code OPT_SERVER_FAILURE_LIMIT} keeps
+     * working) but never surfaces as {@code RES_SOME_ERRORS}, matching the
+     * single-key fan-out contract established by {@see writeFanout()}.
+     *
+     * Final result code follows PECL libmemcached's coarse {@code mset}
+     * semantics: a single fatal primary exception → {@code RES_FAILURE};
+     * otherwise {@code RES_SUCCESS} on a clean run or {@code RES_SOME_ERRORS}
+     * if any item failed locally (encoding / size limit / no eligible shard)
+     * or returned a non-{@code HD} reply from its primary.
      *
      * @param array<mixed> $items
      */
     #[\Override]
     protected function doStoreMulti(array $items, int $expiration, ?string $serverKey): bool
     {
-        $this->pristine = false;
         if ([] === $items) {
             $this->setResult(self::RES_SUCCESS);
 
@@ -338,6 +355,8 @@ final class MemcachedClient extends AbstractCacheClient
         $core = $this->core();
         /** @var array<int, list<array{cmd: string, primary: bool}>> $batches */
         $batches = [];
+        /** @var array<int, bool> $batchHasPrimary */
+        $batchHasPrimary = [];
         $ok = true;
         foreach ($items as $key => $value) {
             $keyString = (string) $key;
@@ -353,9 +372,12 @@ final class MemcachedClient extends AbstractCacheClient
                 continue;
             }
 
-            $batches[$targets['primary']][] = ['cmd' => $prepared, 'primary' => true];
+            $primaryIdx = $targets['primary'];
+            $batches[$primaryIdx][] = ['cmd' => $prepared, 'primary' => true];
+            $batchHasPrimary[$primaryIdx] = true;
             foreach ($targets['replicas'] as $replicaIdx) {
                 $batches[$replicaIdx][] = ['cmd' => $prepared, 'primary' => false];
+                $batchHasPrimary[$replicaIdx] ??= false;
             }
         }
 
@@ -365,15 +387,6 @@ final class MemcachedClient extends AbstractCacheClient
 
         $fatalMessage = null;
         foreach ($batches as $serverIdx => $entries) {
-            $hasPrimary = false;
-            foreach ($entries as $entry) {
-                if ($entry['primary']) {
-                    $hasPrimary = true;
-
-                    break;
-                }
-            }
-
             try {
                 $c = $core->conn->get($serverIdx);
                 foreach ($entries as $entry) {
@@ -388,8 +401,10 @@ final class MemcachedClient extends AbstractCacheClient
 
                 $reader = new MetaReader($c);
                 foreach ($entries as $entry) {
-                    $storedOk = $this->storeSucceeded($reader->readOne(false));
-                    if ($entry['primary'] && !$storedOk) {
+                    // Replica reply is consumed only to keep the pipeline
+                    // aligned; its outcome must not leak into resultCode.
+                    $reply = $reader->readOne(false);
+                    if ($entry['primary'] && !$this->primaryStoreReplyOk($reply)) {
                         $ok = false;
                     }
                 }
@@ -397,7 +412,7 @@ final class MemcachedClient extends AbstractCacheClient
                 $this->recordServerSuccess($serverIdx);
             } catch (\Throwable $throwable) {
                 $this->recordServerFailure($serverIdx, $throwable);
-                if ($hasPrimary) {
+                if ($batchHasPrimary[$serverIdx] ?? false) {
                     $ok = false;
                     $fatalMessage = $throwable->getMessage();
                 }
@@ -416,11 +431,17 @@ final class MemcachedClient extends AbstractCacheClient
     #[\Override]
     protected function doTouch(string $key, int $expiration, ?string $serverKey): bool
     {
-        $this->flushNetworkWrites();
+        if (!$this->shouldBufferNoReplyWrite()) {
+            $this->flushNetworkWrites();
+        }
 
         return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($expiration): bool {
             $c = $this->core()->conn->get($idx);
-            $c->write(MetaCommandBuilder::metaGetTouch($pk, $this->ttlToken($expiration)));
+            $noReply = $this->useNoReply();
+            $this->send($c, MetaCommandBuilder::metaGetTouch($pk, $this->ttlToken($expiration), $noReply));
+            if ($noReply) {
+                return $this->okResult(self::RES_SUCCESS);
+            }
 
             $reader = new MetaReader($c);
             $r = $reader->readOne(false);
@@ -488,7 +509,7 @@ final class MemcachedClient extends AbstractCacheClient
 
         return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($offset, $decrement, $initialValue, $expiry, $autoCreate): int|false {
             $c = $this->core()->conn->get($idx);
-            $c->write(MetaCommandBuilder::metaArith(
+            $this->send($c, MetaCommandBuilder::metaArith(
                 $pk,
                 $offset,
                 $decrement,
@@ -584,7 +605,12 @@ final class MemcachedClient extends AbstractCacheClient
         }
 
         $core = $this->core();
-        $result = $this->collectFromServers(static fn (int $i): ?bool => TextProtocolClient::flushAll($core->conn->get($i), $delay) ? true : null, false);
+        // collectFromServers treats `null` as "this shard failed", so we map
+        // the protocol's `bool` outcome into `true|null` for the helper.
+        $result = $this->collectFromServers(
+            static fn (int $i): ?bool => TextProtocolClient::flushAll($core->conn->get($i), $delay) ? true : null,
+            false,
+        );
 
         $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_FAILURE);
 
@@ -678,19 +704,23 @@ final class MemcachedClient extends AbstractCacheClient
         };
     }
 
-    private function storeSucceeded(MetaResult $result): bool
+    /**
+     * Pure-check used by the pipelined {@see doStoreMulti()} reader. Returns
+     * {@code true} iff the meta-set reply indicates the value was stored
+     * ({@code HD}), without touching {@code resultCode} — the multi-store
+     * caller decides the final coarse PECL code ({@code RES_SUCCESS} /
+     * {@code RES_SOME_ERRORS} / {@code RES_FAILURE}) once every shard has been
+     * drained. Wire-level protocol errors (CLIENT_ERROR / SERVER_ERROR /
+     * ERROR) are treated as a per-item failure but again do not pollute the
+     * global state code.
+     */
+    private function primaryStoreReplyOk(MetaResult $result): bool
     {
-        if ($this->applyMetaWireError($result)) {
+        if (null !== $result->wireErrorResultCode()) {
             return false;
         }
 
-        return match ($result->code) {
-            'HD' => true,
-            'NS' => $this->failResult(self::RES_NOTSTORED),
-            'EX' => $this->failResult(self::RES_DATA_EXISTS),
-            'NF' => $this->failResult(self::RES_NOTFOUND),
-            default => $this->failResult(self::RES_FAILURE),
-        };
+        return 'HD' === $result->code;
     }
 
     private function applyMetaWireError(MetaResult $r): bool

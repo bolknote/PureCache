@@ -29,6 +29,7 @@ final class ConnectionManager
         private readonly int $ioBytesWatermark = 0,
         private readonly int $ioMsgWatermark = 0,
         private readonly int $ioKeyPrefetch = 0,
+        private readonly int $tcpKeepIdleSec = 0,
     ) {
     }
 
@@ -74,6 +75,7 @@ final class ConnectionManager
                 $this->tcpCork,
                 $this->pollTimeoutMs,
                 $this->ioBytesWatermark,
+                $this->tcpKeepIdleSec,
             );
         }
 
@@ -88,10 +90,34 @@ final class ConnectionManager
         $fn($this->get($serverIndex));
     }
 
-    public function flushAllBuffers(): void
+    /**
+     * Flush every per-connection write buffer in the pool. Each per-server
+     * failure is reported to {@code $onFailure} (so the caller can attribute it
+     * to the right shard's failure tracker / {@code OPT_SERVER_FAILURE_LIMIT}
+     * accounting) but the iteration keeps going so a single bad shard does not
+     * block flushes on the rest of the pool. The first captured exception is
+     * re-thrown at the end to preserve the legacy "flush failed → caller sees
+     * an exception" contract.
+     *
+     * @param (callable(int, \Throwable): void)|null $onFailure
+     */
+    public function flushAllBuffers(?callable $onFailure = null): void
     {
-        foreach ($this->pool as $c) {
-            $c->flushWrite();
+        $firstError = null;
+        foreach ($this->pool as $serverIndex => $connection) {
+            try {
+                $connection->flushWrite();
+            } catch (\Throwable $throwable) {
+                if (null !== $onFailure) {
+                    $onFailure($serverIndex, $throwable);
+                }
+
+                $firstError ??= $throwable;
+            }
+        }
+
+        if ($firstError instanceof \Throwable) {
+            throw $firstError;
         }
     }
 

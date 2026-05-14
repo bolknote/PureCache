@@ -32,12 +32,22 @@ final class MetaCommandBuilder
 
     /**
      * Touch a key without retrieving its value via {@code mg <key> T<ttl>}.
+     * Pass {@code true} for {@code $noreply} to append the {@code q} flag so
+     * the server does not emit a reply line (PECL {@code OPT_NOREPLY}).
      */
-    public static function metaGetTouch(string $prefixedKey, string $ttlToken): string
+    public static function metaGetTouch(string $prefixedKey, string $ttlToken, bool $noreply = false): string
     {
         [$encodedKey, $bFlag] = KeyFormatter::encodeMetaKey($prefixedKey);
+        $parts = ['T'.$ttlToken];
+        if ($noreply) {
+            $parts[] = 'q';
+        }
 
-        return 'mg '.$encodedKey.' T'.$ttlToken.$bFlag."\r\n";
+        if ('' !== $bFlag) {
+            $parts[] = trim($bFlag);
+        }
+
+        return 'mg '.$encodedKey.' '.implode(' ', $parts)."\r\n";
     }
 
     /**
