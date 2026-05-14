@@ -53,6 +53,18 @@ final class ClientOptions
             MemcachedConstants::OPT_NUMBER_OF_REPLICAS => 0,
             MemcachedConstants::OPT_RANDOMIZE_REPLICA_READ => false,
             MemcachedConstants::OPT_ENCODING_MODE => MemcachedConstants::ENCODING_MODE_LIBMEMCACHED,
+            // libmemcached's MEMCACHED_BEHAVIOR_SUPPORT_CAS is a deprecated
+            // gate from the days when CAS-token tracking was a measurable
+            // overhead (libmemcached 0.x). PureCache always carries the CAS
+            // token through the meta protocol's `c` flag, so this dial is
+            // mirrored for parity but has no observable effect on the wire.
+            // Default matches libmemcached's `flags.support_cas = false` init.
+            MemcachedConstants::OPT_SUPPORT_CAS => false,
+            // Idle interval before the kernel starts firing TCP keepalive
+            // probes. Only takes effect when OPT_TCP_KEEPALIVE is on and the
+            // platform exposes the corresponding setsockopt knob
+            // (Linux: TCP_KEEPIDLE, macOS: TCP_KEEPALIVE option).
+            MemcachedConstants::OPT_TCP_KEEPIDLE => 0,
         ];
     }
 

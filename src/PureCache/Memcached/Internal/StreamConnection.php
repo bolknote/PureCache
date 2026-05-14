@@ -32,6 +32,7 @@ final class StreamConnection
         private readonly bool $tcpCork = false,
         private readonly int $pollTimeoutMs = 1000,
         private readonly int $ioBytesWatermark = 0,
+        private readonly int $tcpKeepIdleSec = 0,
     ) {
     }
 
@@ -205,6 +206,9 @@ final class StreamConnection
 
         if ($this->tcpKeepAlive && \defined('SO_KEEPALIVE')) {
             @socket_set_option($importedSocket, \SOL_SOCKET, \SO_KEEPALIVE, 1);
+            if ($this->tcpKeepIdleSec > 0) {
+                $this->applyTcpKeepIdle($importedSocket);
+            }
         }
 
         if ($this->socketSendSize > 0 && \defined('SO_SNDBUF')) {
@@ -218,6 +222,76 @@ final class StreamConnection
         if ($this->tcpCork) {
             $this->applyTcpCork($importedSocket);
         }
+    }
+
+    /**
+     * Apply {@code TCP_KEEPIDLE} — seconds the connection must sit idle
+     * before the kernel starts firing TCP keepalive probes — onto an
+     * imported socket. Only meaningful when {@code SO_KEEPALIVE} is on,
+     * which the caller has already verified.
+     *
+     * Platform notes (mirrors what libmemcached does under the hood):
+     *  - Linux exposes the knob as {@code TCP_KEEPIDLE} on {@code SOL_TCP}.
+     *  - macOS/Darwin spells the same concept {@code TCP_KEEPALIVE} on
+     *    {@code IPPROTO_TCP} — confusingly, Linux's {@code TCP_KEEPALIVE}
+     *    name doesn't exist there, and Darwin's name reuses what Linux
+     *    calls {@code SO_KEEPALIVE}. ext-sockets exposes the macOS value
+     *    as {@code TCP_KEEPALIVE}.
+     *  - Windows has no equivalent in stream sockets (the moral equivalent
+     *    is {@code SIO_KEEPALIVE_VALS} via {@code WSAIoctl}, which isn't
+     *    reachable from PHP), so this becomes a documented no-op there —
+     *    same observable behaviour as libmemcached's
+     *    {@code MEMCACHED_BEHAVIOR_TCP_KEEPIDLE} on non-Linux builds.
+     */
+    private function applyTcpKeepIdle(\Socket $socket): void
+    {
+        [$level, $optname] = $this->resolveKeepIdleSockoptIds();
+        if (null === $level || null === $optname) {
+            return;
+        }
+
+        @socket_set_option($socket, $level, $optname, $this->tcpKeepIdleSec);
+    }
+
+    /**
+     * @return array{0:int|null,1:int|null} {@code [level, optname]} pair to
+     *                                      pass to {@code socket_set_option()};
+     *                                      either may be {@code null} when the
+     *                                      platform doesn't expose the knob
+     */
+    private function resolveKeepIdleSockoptIds(): array
+    {
+        $level = $this->intConstant('SOL_TCP') ?? $this->intConstant('IPPROTO_TCP');
+
+        $optname = $this->intConstant('TCP_KEEPIDLE');
+        if (null === $optname && 'Darwin' === \PHP_OS_FAMILY) {
+            // ext-sockets only exports TCP_KEEPALIVE on macOS where it
+            // carries TCP_KEEPIDLE semantics. Guarding on PHP_OS_FAMILY
+            // keeps a future build that re-exports Linux's TCP_KEEPALIVE
+            // (a plain on/off toggle, not an idle interval) from slipping
+            // through this branch.
+            $optname = $this->intConstant('TCP_KEEPALIVE');
+        }
+
+        return [$level, $optname];
+    }
+
+    /**
+     * Resolve a global constant to its {@code int} value when available,
+     * falling back to {@code null} for absent or non-int definitions. PHPStan
+     * sees the raw {@code \FOO} fetch as {@code mixed} when the constant
+     * isn't unconditionally defined, so we funnel both the existence check
+     * and the type narrowing through this helper.
+     */
+    private function intConstant(string $name): ?int
+    {
+        if (!\defined($name)) {
+            return null;
+        }
+
+        $value = \constant($name);
+
+        return \is_int($value) ? $value : null;
     }
 
     /**

@@ -327,7 +327,15 @@ final class ClientOptionApplier
         }
 
         $core->options[$option] = $integer;
-        if (MemcachedConstants::OPT_SOCKET_SEND_SIZE === $option || MemcachedConstants::OPT_SOCKET_RECV_SIZE === $option) {
+        if (\in_array($option, [
+            MemcachedConstants::OPT_SOCKET_SEND_SIZE,
+            MemcachedConstants::OPT_SOCKET_RECV_SIZE,
+            // TCP_KEEPIDLE is applied at socket-open time inside
+            // {@see \PureCache\Memcached\Internal\StreamConnection}, so the
+            // pool has to be torn down for the new value to take effect on
+            // any future read/write — same model as OPT_SOCKET_SEND_SIZE.
+            MemcachedConstants::OPT_TCP_KEEPIDLE,
+        ], true)) {
             $env->onPoolInvalidated();
         }
 
@@ -345,6 +353,9 @@ final class ClientOptionApplier
             MemcachedConstants::OPT_NOREPLY,
             MemcachedConstants::OPT_BUFFER_WRITES,
             MemcachedConstants::OPT_ALLOW_SERIALIZED_CLASSES,
+            // Stored for getOption parity only; the meta protocol always
+            // returns CAS regardless of this flag (see applier preamble note).
+            MemcachedConstants::OPT_SUPPORT_CAS,
         ], true);
     }
 
@@ -363,6 +374,7 @@ final class ClientOptionApplier
             MemcachedConstants::OPT_ITEM_SIZE_LIMIT,
             MemcachedConstants::OPT_SOCKET_SEND_SIZE,
             MemcachedConstants::OPT_SOCKET_RECV_SIZE,
+            MemcachedConstants::OPT_TCP_KEEPIDLE,
         ], true);
     }
 
@@ -380,9 +392,6 @@ final class ClientOptionApplier
         return \in_array($option, [
             MemcachedConstants::OPT_BINARY_PROTOCOL,
             MemcachedConstants::OPT_USE_UDP,
-            MemcachedConstants::OPT_LOAD_FROM_FILE,
-            MemcachedConstants::OPT_SUPPORT_CAS,
-            MemcachedConstants::OPT_TCP_KEEPIDLE,
         ], true);
     }
 

@@ -54,6 +54,7 @@ final class MemcachedClientCore extends ClientCoreState
             $this->optionInt(MemcachedConstants::OPT_IO_BYTES_WATERMARK, 0),
             $this->optionInt(MemcachedConstants::OPT_IO_MSG_WATERMARK, 0),
             $this->optionInt(MemcachedConstants::OPT_IO_KEY_PREFETCH, 0),
+            $this->optionInt(MemcachedConstants::OPT_TCP_KEEPIDLE, 0),
         );
     }
 }

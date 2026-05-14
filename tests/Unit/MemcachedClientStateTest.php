@@ -358,12 +358,15 @@ final class MemcachedClientStateTest extends TestCase
     {
         $client = new MemcachedClient();
 
+        // OPT_USE_UDP and OPT_BINARY_PROTOCOL are the only OPT_* dials that
+        // describe transports PureCache does not speak — the meta-protocol
+        // client is binary-safe over plain TCP. Everything else exposed by
+        // {@see MemcachedConstants} now lands somewhere observable (storage,
+        // selector, failure tracker, file loader, …); see the per-option
+        // tests below for the contracts.
         foreach ([
             MemcachedClient::OPT_USE_UDP,
             MemcachedClient::OPT_BINARY_PROTOCOL,
-            MemcachedClient::OPT_LOAD_FROM_FILE,
-            MemcachedClient::OPT_SUPPORT_CAS,
-            MemcachedClient::OPT_TCP_KEEPIDLE,
         ] as $option) {
             self::assertFalse($client->setOption($option, true));
             self::assertSame(MemcachedClient::RES_NOT_SUPPORTED, $client->getResultCode());
@@ -613,9 +616,190 @@ final class MemcachedClientStateTest extends TestCase
             MemcachedClient::OPT_HASH_WITH_PREFIX_KEY,
             MemcachedClient::OPT_NOREPLY,
             MemcachedClient::OPT_BUFFER_WRITES,
+            MemcachedClient::OPT_SUPPORT_CAS,
         ] as $option) {
             self::assertTrue($client->setOption($option, true));
             self::assertSame(1, $client->getOption($option));
+        }
+    }
+
+    /**
+     * {@code OPT_SUPPORT_CAS} mirrors libmemcached's
+     * {@code MEMCACHED_BEHAVIOR_SUPPORT_CAS}: defaults to off and is purely
+     * a stored toggle. PureCache's meta-protocol always requests the CAS
+     * token via the {@code c} flag, so flipping this dial does not change
+     * observable behaviour — but parity callers still expect the get/set
+     * roundtrip and the integer-boolean projection.
+     */
+    public function testSupportCasIsBooleanWithLibmemcachedDefault(): void
+    {
+        $client = new MemcachedClient();
+
+        self::assertSame(0, $client->getOption(MemcachedClient::OPT_SUPPORT_CAS));
+        self::assertTrue($client->setOption(MemcachedClient::OPT_SUPPORT_CAS, true));
+        self::assertSame(1, $client->getOption(MemcachedClient::OPT_SUPPORT_CAS));
+        self::assertTrue($client->setOption(MemcachedClient::OPT_SUPPORT_CAS, false));
+        self::assertSame(0, $client->getOption(MemcachedClient::OPT_SUPPORT_CAS));
+    }
+
+    /**
+     * {@code OPT_TCP_KEEPIDLE} is the seconds-of-idle interval applied via
+     * {@code setsockopt(TCP_KEEPIDLE)} on Linux and the analogous
+     * {@code TCP_KEEPALIVE} on macOS. The applier accepts any non-negative
+     * integer, rejects negative ints / non-coercible strings, and the
+     * stored value is what the next pooled connection will see — pin the
+     * accepted contract here so the platform fallback inside
+     * {@see \PureCache\Memcached\Internal\StreamConnection} is free to
+     * silently no-op when neither knob is reachable.
+     */
+    public function testTcpKeepIdleAcceptsNonNegativeIntegers(): void
+    {
+        $client = new MemcachedClient();
+
+        self::assertSame(0, $client->getOption(MemcachedClient::OPT_TCP_KEEPIDLE));
+        self::assertTrue($client->setOption(MemcachedClient::OPT_TCP_KEEPIDLE, 30));
+        self::assertSame(30, $client->getOption(MemcachedClient::OPT_TCP_KEEPIDLE));
+        self::assertTrue($client->setOption(MemcachedClient::OPT_TCP_KEEPIDLE, '45'));
+        self::assertSame(45, $client->getOption(MemcachedClient::OPT_TCP_KEEPIDLE));
+        self::assertTrue($client->setOption(MemcachedClient::OPT_TCP_KEEPIDLE, 0));
+        self::assertSame(0, $client->getOption(MemcachedClient::OPT_TCP_KEEPIDLE));
+
+        self::assertFalse($client->setOption(MemcachedClient::OPT_TCP_KEEPIDLE, -1));
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+        self::assertFalse($client->setOption(MemcachedClient::OPT_TCP_KEEPIDLE, 'abc'));
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+    }
+
+    /**
+     * {@code OPT_LOAD_FROM_FILE} runs the libmemcached configuration-file
+     * DSL: server list, hashing, timeouts and tuning dials are populated
+     * from a single token stream. Directives unsupported by the current
+     * PureCache backend emit notices but the overall load still succeeds —
+     * mirroring libmemcached's "downgrade unsupported behaviours" model so
+     * a portable config file works against leaner consumers.
+     */
+    public function testLoadFromFilePopulatesPoolAndOptions(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'purecache_libmemcached_');
+        self::assertIsString($path);
+        try {
+            file_put_contents($path, <<<CONF
+                --SERVER=primary.example.com:11215
+                --SERVER=secondary.example.com:11216/?3
+                --HASH=md5
+                --DISTRIBUTION=consistent
+                --NAMESPACE="lmcfg_"
+                --TCP-NODELAY
+                --TCP-KEEPALIVE
+                --TCP-KEEPIDLE=75
+                --SND-TIMEOUT=250
+                --RCV-TIMEOUT=350
+                --SUPPORT-CAS
+                --POOL-MAX=8
+                CONF);
+
+            $client = new MemcachedClient();
+            self::assertTrue($client->setOption(MemcachedClient::OPT_LOAD_FROM_FILE, $path));
+            self::assertSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
+            self::assertSame($path, $client->getOption(MemcachedClient::OPT_LOAD_FROM_FILE));
+
+            self::assertSame([
+                ['host' => 'primary.example.com', 'port' => 11215, 'type' => 'TCP', 'weight' => 0],
+                ['host' => 'secondary.example.com', 'port' => 11216, 'type' => 'TCP', 'weight' => 3],
+            ], $client->getServerList());
+
+            self::assertSame(MemcachedClient::HASH_MD5, $client->getOption(MemcachedClient::OPT_HASH));
+            self::assertSame(
+                MemcachedClient::DISTRIBUTION_CONSISTENT,
+                $client->getOption(MemcachedClient::OPT_DISTRIBUTION),
+            );
+            self::assertSame('lmcfg_', $client->getOption(MemcachedClient::OPT_PREFIX_KEY));
+            self::assertSame(1, $client->getOption(MemcachedClient::OPT_TCP_NODELAY));
+            self::assertSame(1, $client->getOption(MemcachedClient::OPT_TCP_KEEPALIVE));
+            self::assertSame(75, $client->getOption(MemcachedClient::OPT_TCP_KEEPIDLE));
+            self::assertSame(250, $client->getOption(MemcachedClient::OPT_SEND_TIMEOUT));
+            self::assertSame(350, $client->getOption(MemcachedClient::OPT_RECV_TIMEOUT));
+            self::assertSame(1, $client->getOption(MemcachedClient::OPT_SUPPORT_CAS));
+        } finally {
+            @unlink($path);
+        }
+    }
+
+    public function testLoadFromFileResetsBetweenIncludeAndConfigureFile(): void
+    {
+        $dir = sys_get_temp_dir();
+        $inner = $dir.\DIRECTORY_SEPARATOR.'purecache_lm_inner_'.bin2hex(random_bytes(4)).'.conf';
+        $outer = $dir.\DIRECTORY_SEPARATOR.'purecache_lm_outer_'.bin2hex(random_bytes(4)).'.conf';
+        file_put_contents($inner, "--SERVER=inner.host:11211\n--HASH=fnv1a_64\n");
+        file_put_contents($outer, <<<CONF
+            --SERVER=outer-pre.host:11212
+            INCLUDE "{$inner}"
+            --SERVER=outer-post.host:11213
+            CONF);
+
+        try {
+            $client = new MemcachedClient();
+            self::assertTrue($client->setOption(MemcachedClient::OPT_LOAD_FROM_FILE, $outer));
+            // INCLUDE is additive — outer-pre, inner, outer-post all appear.
+            self::assertSame(
+                ['outer-pre.host', 'inner.host', 'outer-post.host'],
+                array_map(static fn (array $s): string => $s['host'], $client->getServerList()),
+            );
+            self::assertSame(MemcachedClient::HASH_FNV1A_64, $client->getOption(MemcachedClient::OPT_HASH));
+
+            // RESET inside the file wipes the server list and behaviour
+            // bits, matching libmemcached's documented semantics.
+            $reset = $dir.\DIRECTORY_SEPARATOR.'purecache_lm_reset_'.bin2hex(random_bytes(4)).'.conf';
+            file_put_contents($reset, "--SERVER=pre-reset:11211\nRESET\n--SERVER=after-reset:11212\nEND\n--SERVER=after-end:11213\n");
+            try {
+                $fresh = new MemcachedClient();
+                self::assertTrue($fresh->setOption(MemcachedClient::OPT_LOAD_FROM_FILE, $reset));
+                self::assertSame(
+                    [['host' => 'after-reset', 'port' => 11212, 'type' => 'TCP', 'weight' => 0]],
+                    $fresh->getServerList(),
+                );
+            } finally {
+                @unlink($reset);
+            }
+        } finally {
+            @unlink($inner);
+            @unlink($outer);
+        }
+    }
+
+    public function testLoadFromFileFailsCleanlyOnInvalidInputs(): void
+    {
+        $client = new MemcachedClient();
+
+        self::assertFalse($client->setOption(MemcachedClient::OPT_LOAD_FROM_FILE, ''));
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+
+        self::assertFalse($client->setOption(MemcachedClient::OPT_LOAD_FROM_FILE, ['not-a-string']));
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+
+        $missing = sys_get_temp_dir().\DIRECTORY_SEPARATOR.'purecache_lm_missing_'.bin2hex(random_bytes(6)).'.conf';
+        self::assertFileDoesNotExist($missing);
+        self::assertFalse($client->setOption(MemcachedClient::OPT_LOAD_FROM_FILE, $missing));
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+
+        $unterminated = tempnam(sys_get_temp_dir(), 'purecache_lm_bad_');
+        self::assertIsString($unterminated);
+        try {
+            file_put_contents($unterminated, '--NAMESPACE="oops');
+            self::assertFalse($client->setOption(MemcachedClient::OPT_LOAD_FROM_FILE, $unterminated));
+            self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+        } finally {
+            @unlink($unterminated);
+        }
+
+        $errFile = tempnam(sys_get_temp_dir(), 'purecache_lm_err_');
+        self::assertIsString($errFile);
+        try {
+            file_put_contents($errFile, "--SERVER=ok.host:11211\nERROR\n");
+            self::assertFalse($client->setOption(MemcachedClient::OPT_LOAD_FROM_FILE, $errFile));
+            self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+        } finally {
+            @unlink($errFile);
         }
     }
 
