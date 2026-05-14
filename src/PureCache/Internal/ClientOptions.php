@@ -24,7 +24,7 @@ final class ClientOptions
             MemcachedConstants::OPT_COMPRESSION => true,
             MemcachedConstants::OPT_COMPRESSION_TYPE => MemcachedConstants::COMPRESSION_TYPE_FASTLZ,
             MemcachedConstants::OPT_COMPRESSION_LEVEL => 3,
-            MemcachedConstants::OPT_SERIALIZER => MemcachedConstants::SERIALIZER_PHP,
+            MemcachedConstants::OPT_SERIALIZER => self::defaultSerializer(),
             MemcachedConstants::OPT_PREFIX_KEY => '',
             MemcachedConstants::OPT_HASH => MemcachedConstants::HASH_DEFAULT,
             MemcachedConstants::OPT_DISTRIBUTION => MemcachedConstants::DISTRIBUTION_MODULA,
@@ -79,5 +79,25 @@ final class ClientOptions
         }
 
         return null;
+    }
+
+    /**
+     * Picks the initial {@code OPT_SERIALIZER} the same way PECL does: igbinary
+     * first if its extension is loaded, then msgpack, otherwise PHP's native
+     * {@code serialize()}. Apps that switch backends shouldn't see the wire
+     * format change underneath them, so the choice has to mirror PECL's
+     * documented order — see ext/memcached's {@code php_memc_init_globals()}.
+     */
+    public static function defaultSerializer(): int
+    {
+        if (\extension_loaded('igbinary')) {
+            return MemcachedConstants::SERIALIZER_IGBINARY;
+        }
+
+        if (\extension_loaded('msgpack')) {
+            return MemcachedConstants::SERIALIZER_MSGPACK;
+        }
+
+        return MemcachedConstants::SERIALIZER_PHP;
     }
 }

@@ -80,6 +80,35 @@ final class PeclParityTest extends TestCase
         self::assertSame([], $mismatches, "Constant value/type drift vs PECL Memcached:\n".implode("\n", $mismatches));
     }
 
+    /**
+     * PECL picks {@code OPT_SERIALIZER}'s default from compile-time
+     * {@code HAVE_IGBINARY}/{@code HAVE_MSGPACK} flags ("igbinary if available,
+     * then msgpack, then PHP"). PureCache has no compile step, so it derives
+     * the same precedence from {@see \extension_loaded()}. When PECL's build
+     * flags line up with the PHP extensions actually loaded — the typical
+     * case for distro-packaged builds — both clients must return the same
+     * default. Mismatches between PECL's flags and the runtime extensions
+     * (e.g. PECL built without igbinary support but ext-igbinary still loaded
+     * for PureCache to use) are unavoidable and explicitly skipped.
+     */
+    public function testDefaultSerializerMatchesPeclPrecedence(): void
+    {
+        $peclIgbinaryAdvertised = \Memcached::HAVE_IGBINARY;
+        $peclMsgpackAdvertised = \Memcached::HAVE_MSGPACK;
+
+        $igbinaryLoaded = \extension_loaded('igbinary');
+        $msgpackLoaded = \extension_loaded('msgpack');
+
+        if ($peclIgbinaryAdvertised !== $igbinaryLoaded || $peclMsgpackAdvertised !== $msgpackLoaded) {
+            self::markTestSkipped('PECL HAVE_* compile flags disagree with the PHP extensions loaded in this runtime; OPT_SERIALIZER defaults are not directly comparable.');
+        }
+
+        $peclDefault = (new \Memcached())->getOption(\Memcached::OPT_SERIALIZER);
+        $pureDefault = (new MemcachedClient())->getOption(MemcachedClient::OPT_SERIALIZER);
+
+        self::assertSame($peclDefault, $pureDefault);
+    }
+
     public function testSupportedOptionSetGetParity(): void
     {
         $this->assertParity(

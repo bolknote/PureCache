@@ -7,6 +7,7 @@ namespace PureCache\Tests\Unit;
 use PHPUnit\Framework\TestCase;
 use PureCache\AbstractCacheClient;
 use PureCache\Internal\CacheEntry;
+use PureCache\Internal\ClientOptions;
 use PureCache\Memcached\MemcachedClient;
 
 final class MemcachedClientStateTest extends TestCase
@@ -243,7 +244,7 @@ final class MemcachedClientStateTest extends TestCase
         $client = new MemcachedClient();
 
         self::assertTrue($client->getOption(MemcachedClient::OPT_COMPRESSION));
-        self::assertSame(MemcachedClient::SERIALIZER_PHP, $client->getOption(MemcachedClient::OPT_SERIALIZER));
+        self::assertSame(ClientOptions::defaultSerializer(), $client->getOption(MemcachedClient::OPT_SERIALIZER));
 
         self::assertTrue($client->setOption(MemcachedClient::OPT_PREFIX_KEY, 'prefix:'));
         self::assertSame('prefix:', $client->getOption(MemcachedClient::OPT_PREFIX_KEY));
@@ -290,7 +291,7 @@ final class MemcachedClientStateTest extends TestCase
 
         self::assertFalse($client->setOption(MemcachedClient::OPT_SERIALIZER, 999));
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
-        self::assertSame(MemcachedClient::SERIALIZER_PHP, $client->getOption(MemcachedClient::OPT_SERIALIZER));
+        self::assertSame(ClientOptions::defaultSerializer(), $client->getOption(MemcachedClient::OPT_SERIALIZER));
 
         self::assertFalse($client->setOption(MemcachedClient::OPT_COMPRESSION_TYPE, 999));
         self::assertSame(38, $client->getResultCode());
@@ -813,14 +814,14 @@ final class MemcachedClientStateTest extends TestCase
         if (!\extension_loaded('igbinary')) {
             self::assertFalse($client->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_IGBINARY));
             self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
-            self::assertSame(MemcachedClient::SERIALIZER_PHP, $client->getOption(MemcachedClient::OPT_SERIALIZER));
+            self::assertSame(ClientOptions::defaultSerializer(), $client->getOption(MemcachedClient::OPT_SERIALIZER));
             $tested = true;
         }
 
         if (!\extension_loaded('msgpack')) {
             self::assertFalse($client->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_MSGPACK));
             self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
-            self::assertSame(MemcachedClient::SERIALIZER_PHP, $client->getOption(MemcachedClient::OPT_SERIALIZER));
+            self::assertSame(ClientOptions::defaultSerializer(), $client->getOption(MemcachedClient::OPT_SERIALIZER));
             $tested = true;
         }
 
