@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace PureMemcached\Tests\Unit;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use PureMemcached\Client\MemcachedClient;
+use PureMemcached\Internal\KeyHasher;
 
 final class KeyHasherDeterminismTest extends TestCase
 {
@@ -53,21 +55,46 @@ final class KeyHasherDeterminismTest extends TestCase
 
     /**
      * @param array<int,int> $expected
-     *
-     * @dataProvider hashReferenceProvider
      */
+    #[DataProvider('hashReferenceProvider')]
     public function testHashAlgorithmsReturnLibhashkitReferenceValues(string $key, array $expected): void
     {
         foreach ($expected as $algorithm => $hash) {
-            self::assertSame($hash, \PureMemcached\Internal\KeyHasher::hash($key, $algorithm));
+            self::assertSame($hash, KeyHasher::hash($key, $algorithm));
         }
     }
 
     public function testUnknownAlgorithmFallsBackToDefault(): void
     {
         self::assertSame(
-            \PureMemcached\Internal\KeyHasher::hash('abc', MemcachedClient::HASH_DEFAULT),
-            \PureMemcached\Internal\KeyHasher::hash('abc', 999),
+            KeyHasher::hash('abc', MemcachedClient::HASH_DEFAULT),
+            KeyHasher::hash('abc', 999),
         );
+    }
+
+    /**
+     * Pinned hsieh values for keys whose length covers every `len & 3` branch of the
+     * tail switch (rem=1, rem=2, rem=3, rem=0) and the main 4-byte block loop with
+     * one and two iterations. The values are reproducible from libhashkit; see the
+     * existing `abc` / `libmemcached` reference cases that validate the algorithm.
+     *
+     * @return iterable<string, array{0:string,1:int}>
+     */
+    public static function hsiehLengthProvider(): iterable
+    {
+        yield 'rem=1 (len=1)' => ['a', 291415938];
+        yield 'rem=2 (len=2)' => ['ab', 1366002500];
+        yield 'rem=0 single block (len=4)' => ['abcd', 3671636187];
+        yield 'rem=1 multi block (len=5)' => ['abcde', 1374488366];
+        yield 'rem=2 multi block (len=6)' => ['abcdef', 2520489434];
+        yield 'rem=3 multi block (len=7)' => ['abcdefg', 4033987565];
+        yield 'rem=0 two blocks (len=8)' => ['abcdefgh', 3188683816];
+    }
+
+    #[DataProvider('hsiehLengthProvider')]
+    public function testHsiehCoversEveryRemainderBranch(string $key, int $expected): void
+    {
+        self::assertSame($expected, KeyHasher::hash($key, MemcachedClient::HASH_HSIEH));
+        self::assertSame($expected, KeyHasher::hash($key, MemcachedClient::HASH_HSIEH));
     }
 }

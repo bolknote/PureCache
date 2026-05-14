@@ -245,6 +245,41 @@ final class MemcachedClientStateTest extends TestCase
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
     }
 
+    public function testSetBucketCoercesFloatStringAndBoolMapValuesLikePecl(): void
+    {
+        $client = new MemcachedClient();
+        $client->addServer('127.0.0.1', 11211);
+        $client->addServer('127.0.0.2', 11212);
+
+        self::assertTrue($client->setBucket([0, '1', 1.7, true, false], null, 1));
+        self::assertSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
+    }
+
+    public function testSetBucketRejectsNegativeFloatAndStringMapValues(): void
+    {
+        $client = new MemcachedClient();
+        $warning = null;
+        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
+            if (\E_USER_WARNING === $severity) {
+                $warning = $message;
+
+                return true;
+            }
+
+            return false;
+        });
+
+        try {
+            self::assertFalse($client->setBucket([0, '-2'], null, 1));
+            self::assertFalse($client->setBucket([0, -1.5], null, 1));
+        } finally {
+            restore_error_handler();
+        }
+
+        self::assertSame('Memcached::setBucket(): the map must contain positive integers', $warning);
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+    }
+
     public function testDefaultAndUpdatedOptions(): void
     {
         $client = new MemcachedClient();
