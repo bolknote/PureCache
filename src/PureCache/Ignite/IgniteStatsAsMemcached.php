@@ -39,6 +39,7 @@ final class IgniteStatsAsMemcached
     /** @var list<int> Opcodes that count as {@code cmd_get}. */
     private const array CMD_GET_OPCODES = [
         IgniteProtocol::OP_CACHE_GET,
+        IgniteProtocol::OP_CACHE_GET_ALL,
     ];
 
     /** @var list<int> Opcodes that count as {@code cmd_set}. */

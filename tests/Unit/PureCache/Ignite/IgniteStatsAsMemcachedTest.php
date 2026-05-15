@@ -19,7 +19,8 @@ final class IgniteStatsAsMemcachedTest extends TestCase
             bytesRead: 4_096,
             bytesWritten: 1_024,
             opCounts: [
-                IgniteProtocol::OP_CACHE_GET => 7,
+                IgniteProtocol::OP_CACHE_GET => 4,
+                IgniteProtocol::OP_CACHE_GET_ALL => 3,
                 IgniteProtocol::OP_CACHE_PUT => 3,
                 IgniteProtocol::OP_CACHE_PUT_IF_ABSENT => 1,
                 IgniteProtocol::OP_CACHE_REPLACE => 2,
@@ -102,7 +103,8 @@ final class IgniteStatsAsMemcachedTest extends TestCase
             bytesRead: 0,
             bytesWritten: 0,
             opCounts: [
-                IgniteProtocol::OP_CACHE_GET => 2,
+                IgniteProtocol::OP_CACHE_GET => 1,
+                IgniteProtocol::OP_CACHE_GET_ALL => 1,
                 IgniteProtocol::OP_CACHE_PUT => 5,
                 IgniteProtocol::OP_CACHE_REMOVE_KEY => 1,
                 IgniteProtocol::OP_CACHE_CONTAINS_KEY => 3,
@@ -117,7 +119,7 @@ final class IgniteStatsAsMemcachedTest extends TestCase
         self::assertSame(8, $slabs['1:used_chunks']);
         self::assertSame(8, $slabs['1:total_chunks']);
         self::assertSame(1, $slabs['1:total_pages']);
-        self::assertSame(2, $slabs['1:get_hits']);
+        self::assertSame(1 + 1, $slabs['1:get_hits']);
         self::assertSame(5, $slabs['1:cmd_set']);
         self::assertSame(1, $slabs['1:delete_hits']);
         self::assertSame(3, $slabs['1:touch_hits']);

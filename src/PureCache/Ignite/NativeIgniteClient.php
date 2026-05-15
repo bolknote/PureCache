@@ -7,6 +7,7 @@ namespace PureCache\Ignite;
 use PureCache\Ignite\Internal\IgniteCacheCodec;
 use PureCache\Ignite\Internal\IgniteHashCode;
 use PureCache\Ignite\Internal\IgniteProtocol;
+use PureCache\Ignite\Internal\IgniteReply;
 use PureCache\Ignite\Internal\IgniteStatsSnapshot;
 use PureCache\Ignite\Internal\IgniteWire;
 
@@ -21,11 +22,13 @@ use PureCache\Ignite\Internal\IgniteWire;
  *
  * Each instance multiplexes requests onto a single socket and pairs them with
  * server replies by the auto-incrementing {@code requestId} that the protocol
- * echoes in the header.
+ * echoes in the header. A single transport-level retry (reconnect + resend) is
+ * attempted when the TCP session fails mid-flight before a complete reply frame
+ * is parsed.
  */
 final class NativeIgniteClient
 {
-    private const string CLUSTER_VERSION_SQL = 'SELECT VERSION FROM "SYS"."NODES"';
+    private const string CLUSTER_VERSION_SQL = 'SELECT VERSION FROM "SYS"."NODES" LIMIT 1';
 
     private const string CLUSTER_VERSION_SCHEMA = 'SYS';
 
@@ -71,7 +74,7 @@ final class NativeIgniteClient
             'socket' => ['tcp_nodelay' => true],
         ]);
 
-        $stream = @stream_socket_client($remote, $errno, $errstr, $timeout, \STREAM_CLIENT_CONNECT, $context);
+        $stream = stream_socket_client($remote, $errno, $errstr, $timeout, \STREAM_CLIENT_CONNECT, $context);
         if (!\is_resource($stream)) {
             throw new \RuntimeException('Ignite connect failed: '.$errstr.' ('.$errno.')');
         }
@@ -95,12 +98,12 @@ final class NativeIgniteClient
 
     public function disconnect(): void
     {
-        if (!\is_resource($this->stream)) {
-            return;
+        if (\is_resource($this->stream)) {
+            fclose($this->stream);
         }
 
-        fclose($this->stream);
         $this->stream = null;
+        $this->nextRequestId = 1;
         $this->connectedAt = 0;
         $this->serverVersion = '';
         $this->bytesRead = 0;
@@ -164,7 +167,9 @@ final class NativeIgniteClient
         $body = $this->cacheKeyBody($cacheId, $key);
         $response = $this->execute(IgniteProtocol::OP_CACHE_GET, $body);
 
-        return $this->readByteArrayObject($response, 0);
+        [$value] = IgniteReply::readByteArrayObject($response, 0);
+
+        return $value;
     }
 
     /**
@@ -191,13 +196,13 @@ final class NativeIgniteClient
 
         $response = $this->execute(IgniteProtocol::OP_CACHE_GET_ALL, $body);
 
+        IgniteReply::requireSpan($response, 0, 4);
         $count = IgniteWire::unpackInt32($response, 0);
         $offset = 4;
         $out = [];
         for ($i = 0; $i < $count; ++$i) {
-            [$key, $offset] = $this->readStringObject($response, $offset);
-            $value = $this->readByteArrayObject($response, $offset);
-            $offset = $this->skipByteArrayObject($response, $offset);
+            [$key, $offset] = IgniteReply::readStringObject($response, $offset);
+            [$value, $offset] = IgniteReply::readByteArrayObject($response, $offset);
             if (null !== $value) {
                 $out[$key] = $value;
             }
@@ -217,7 +222,7 @@ final class NativeIgniteClient
         $body = $this->cacheKeyBody($cacheId, $key).IgniteCacheCodec::encodeByteArrayObject($value);
         $response = $this->execute(IgniteProtocol::OP_CACHE_PUT_IF_ABSENT, $body);
 
-        return $this->readBool($response, 0);
+        return IgniteReply::readBool($response, 0);
     }
 
     public function cacheReplace(int $cacheId, string $key, string $value): bool
@@ -225,7 +230,7 @@ final class NativeIgniteClient
         $body = $this->cacheKeyBody($cacheId, $key).IgniteCacheCodec::encodeByteArrayObject($value);
         $response = $this->execute(IgniteProtocol::OP_CACHE_REPLACE, $body);
 
-        return $this->readBool($response, 0);
+        return IgniteReply::readBool($response, 0);
     }
 
     public function cacheReplaceIfEquals(int $cacheId, string $key, string $expected, string $newValue): bool
@@ -235,7 +240,7 @@ final class NativeIgniteClient
             .IgniteCacheCodec::encodeByteArrayObject($newValue);
         $response = $this->execute(IgniteProtocol::OP_CACHE_REPLACE_IF_EQUALS, $body);
 
-        return $this->readBool($response, 0);
+        return IgniteReply::readBool($response, 0);
     }
 
     public function cacheRemoveKey(int $cacheId, string $key): bool
@@ -243,7 +248,7 @@ final class NativeIgniteClient
         $body = $this->cacheKeyBody($cacheId, $key);
         $response = $this->execute(IgniteProtocol::OP_CACHE_REMOVE_KEY, $body);
 
-        return $this->readBool($response, 0);
+        return IgniteReply::readBool($response, 0);
     }
 
     public function cacheClear(int $cacheId): void
@@ -257,6 +262,8 @@ final class NativeIgniteClient
         $body = $this->cacheInfoBody($cacheId);
         $body .= IgniteWire::packInt32(0);
         $response = $this->execute(IgniteProtocol::OP_CACHE_GET_SIZE, $body);
+
+        IgniteReply::requireSpan($response, 0, 8);
 
         return IgniteWire::unpackInt64($response, 0);
     }
@@ -273,24 +280,27 @@ final class NativeIgniteClient
         $body .= IgniteWire::packInt8(0);
 
         $response = $this->execute(IgniteProtocol::OP_QUERY_SCAN, $body);
+        IgniteReply::requireSpan($response, 0, 8);
         $cursorId = IgniteWire::unpackInt64($response, 0);
 
-        $keys = [];
-        [$page, $hasMore] = $this->readScanPage($response, 8);
-        foreach ($page as $key) {
-            $keys[] = $key;
-        }
+        try {
+            $keys = [];
+            [$page, $hasMore] = IgniteReply::readScanPage($response, 8);
+            array_push($keys, ...$page);
 
-        while ($hasMore) {
-            $pageBody = IgniteWire::packInt64($cursorId);
-            $pageResponse = $this->execute(IgniteProtocol::OP_QUERY_SCAN_CURSOR_GET_PAGE, $pageBody);
-            [$nextPage, $hasMore] = $this->readScanPage($pageResponse, 0);
-            foreach ($nextPage as $key) {
-                $keys[] = $key;
+            while ($hasMore) {
+                $pageBody = IgniteWire::packInt64($cursorId);
+                $pageResponse = $this->execute(IgniteProtocol::OP_QUERY_SCAN_CURSOR_GET_PAGE, $pageBody);
+                [$nextPage, $hasMore] = IgniteReply::readScanPage($pageResponse, 0);
+                array_push($keys, ...$nextPage);
+            }
+
+            return $keys;
+        } finally {
+            if (0 !== $cursorId) {
+                $this->closeResourceQuietly($cursorId);
             }
         }
-
-        return $keys;
     }
 
     // -----------------------------------------------------------------------
@@ -308,16 +318,18 @@ final class NativeIgniteClient
         $this->writeBytes(IgniteWire::packInt32(\strlen($body)).$body);
 
         $response = $this->readFramedResponse();
+        IgniteReply::requireSpan($response, 0, 1);
         $status = IgniteWire::unpackUint8($response, 0);
         if (IgniteProtocol::HANDSHAKE_OK !== $status) {
             $major = IgniteWire::unpackInt16($response, 1);
             $minor = IgniteWire::unpackInt16($response, 3);
             $patch = IgniteWire::unpackInt16($response, 5);
-            [$message] = $this->readStringObject($response, 7);
+            [$message] = IgniteReply::readStringObject($response, 7);
 
             throw new \RuntimeException(\sprintf('Ignite handshake failed (server %d.%d.%d): %s', $major, $minor, $patch, $message));
         }
 
+        $this->nextRequestId = 1;
         $this->connectedAt = time();
     }
 
@@ -342,11 +354,12 @@ final class NativeIgniteClient
         $response = $this->execute(IgniteProtocol::OP_QUERY_SQL_FIELDS, $body);
 
         try {
-            return $this->parseSqlFieldsFirstCell($response);
+            return $this->parseSqlFieldsVersion($response);
         } finally {
+            IgniteReply::requireSpan($response, 0, 8);
             $cursorId = IgniteWire::unpackInt64($response, 0);
             if (0 !== $cursorId) {
-                $this->closeResource($cursorId);
+                $this->closeResourceQuietly($cursorId);
             }
         }
     }
@@ -356,30 +369,60 @@ final class NativeIgniteClient
         $this->execute(IgniteProtocol::OP_RESOURCE_CLOSE, IgniteWire::packInt64($resourceId));
     }
 
-    private function parseSqlFieldsFirstCell(string $response): string
+    private function closeResourceQuietly(int $resourceId): void
+    {
+        try {
+            $this->closeResource($resourceId);
+        } catch (\Throwable) {
+            // cursor cleanup must not mask the original error path
+        }
+    }
+
+    /**
+     * Reads the VERSION cell from the first row of an {@code OP_QUERY_SQL_FIELDS}
+     * reply (column 0). The SQL uses {@code LIMIT 1} so the cluster version is
+     * unambiguous even when several nodes are registered.
+     */
+    private function parseSqlFieldsVersion(string $response): string
     {
         if (\strlen($response) < 16) {
             throw new \RuntimeException('Ignite SQL fields reply too short');
         }
 
+        IgniteReply::requireSpan($response, 8, 8);
         $columnCount = IgniteWire::unpackInt32($response, 8);
         $offset = 12;
         $rowCount = IgniteWire::unpackInt32($response, $offset);
         $offset += 4;
 
-        for ($row = 0; $row < $rowCount; ++$row) {
-            for ($col = 0; $col < $columnCount; ++$col) {
-                [$value, $offset] = $this->readDataObject($response, $offset);
-                if (null !== $value && '' !== (string) $value) {
-                    return (string) $value;
-                }
-            }
+        if ($rowCount < 1 || $columnCount < 1) {
+            throw new \RuntimeException('Ignite SQL fields query returned no VERSION row');
         }
 
-        throw new \RuntimeException('Ignite SQL fields query returned no VERSION value');
+        [$value] = IgniteReply::readDataObject($response, $offset);
+        if (null === $value || '' === (string) $value) {
+            throw new \RuntimeException('Ignite SQL fields query returned empty VERSION');
+        }
+
+        return (string) $value;
     }
 
     private function execute(int $opCode, string $body): string
+    {
+        try {
+            return $this->executeOnce($opCode, $body);
+        } catch (\RuntimeException $exception) {
+            if (!$this->isRetriableTransportFailure($exception)) {
+                throw $exception;
+            }
+
+            $this->reconnectTransport();
+
+            return $this->executeOnce($opCode, $body);
+        }
+    }
+
+    private function executeOnce(int $opCode, string $body): string
     {
         $this->ensureConnected();
         $this->opCounts[$opCode] = ($this->opCounts[$opCode] ?? 0) + 1;
@@ -388,6 +431,24 @@ final class NativeIgniteClient
         $this->writeBytes(IgniteWire::packInt32(\strlen($message)).$message);
 
         return $this->readResponse($requestId);
+    }
+
+    private function isRetriableTransportFailure(\RuntimeException $exception): bool
+    {
+        $message = $exception->getMessage();
+
+        return \in_array($message, [
+            'Ignite read truncated',
+            'Ignite read timed out',
+            'Ignite write failed',
+            'Ignite not connected',
+        ], true) || str_starts_with($message, 'Ignite reply: frame length ');
+    }
+
+    private function reconnectTransport(): void
+    {
+        $this->disconnect();
+        $this->connect();
     }
 
     private function readResponse(int $expectedRequestId): string
@@ -404,7 +465,7 @@ final class NativeIgniteClient
 
         $status = IgniteWire::unpackInt32($frame, 8);
         if (IgniteProtocol::RESPONSE_OK !== $status) {
-            [$message] = $this->readStringObject($frame, 12);
+            [$message] = IgniteReply::readStringObject($frame, 12);
 
             throw new IgniteCommandException($message, $status);
         }
@@ -416,9 +477,7 @@ final class NativeIgniteClient
     {
         $header = $this->readExact(4);
         $length = IgniteWire::unpackInt32($header, 0);
-        if ($length < 0) {
-            throw new \RuntimeException('Ignite reply: invalid frame length');
-        }
+        IgniteReply::assertFrameLength($length);
 
         if (0 === $length) {
             return '';
@@ -427,137 +486,9 @@ final class NativeIgniteClient
         return $this->readExact($length);
     }
 
-    /**
-     * @return array{0:list<string>, 1:bool}
-     */
-    private function readScanPage(string $bytes, int $offset): array
-    {
-        $rowCount = IgniteWire::unpackInt32($bytes, $offset);
-        $offset += 4;
-        $keys = [];
-        for ($i = 0; $i < $rowCount; ++$i) {
-            [$key, $offset] = $this->readStringObject($bytes, $offset);
-            $keys[] = $key;
-            $offset = $this->skipByteArrayObject($bytes, $offset);
-        }
-
-        return [$keys, $this->readBool($bytes, $offset)];
-    }
-
-    /**
-     * Reads one type-prefixed {@code byte[]} (type 12) or NULL (type 101) at the
-     * given offset. Returns {@code null} when the object is NULL so callers can
-     * disambiguate "missing key" from "empty byte array".
-     */
-    private function readByteArrayObject(string $bytes, int $offset): ?string
-    {
-        $type = IgniteWire::unpackUint8($bytes, $offset);
-        if (IgniteProtocol::TYPE_NULL === $type) {
-            return null;
-        }
-
-        if (IgniteProtocol::TYPE_BYTE_ARRAY !== $type) {
-            throw new \RuntimeException('Ignite reply: expected byte_array, got type '.$type);
-        }
-
-        $length = IgniteWire::unpackInt32($bytes, $offset + 1);
-        if ($length < 0) {
-            throw new \RuntimeException('Ignite reply: negative byte_array length');
-        }
-
-        return substr($bytes, $offset + 5, $length);
-    }
-
-    private function skipByteArrayObject(string $bytes, int $offset): int
-    {
-        $type = IgniteWire::unpackUint8($bytes, $offset);
-        if (IgniteProtocol::TYPE_NULL === $type) {
-            return $offset + 1;
-        }
-
-        if (IgniteProtocol::TYPE_BYTE_ARRAY !== $type) {
-            throw new \RuntimeException('Ignite reply: expected byte_array, got type '.$type);
-        }
-
-        $length = IgniteWire::unpackInt32($bytes, $offset + 1);
-
-        return $offset + 5 + max(0, $length);
-    }
-
-    /**
-     * Reads one type-prefixed {@code String} object and returns the decoded
-     * value along with the next read offset.
-     *
-     * @return array{0:string,1:int}
-     */
-    /**
-     * @return array{0:string|int|null,1:int}
-     */
-    private function readDataObject(string $bytes, int $offset): array
-    {
-        $type = IgniteWire::unpackUint8($bytes, $offset);
-        if (IgniteProtocol::TYPE_NULL === $type) {
-            return [null, $offset + 1];
-        }
-
-        if (IgniteProtocol::TYPE_STRING === $type) {
-            return $this->readStringObject($bytes, $offset);
-        }
-
-        if (IgniteProtocol::TYPE_INT === $type) {
-            $value = IgniteWire::unpackInt32($bytes, $offset + 1);
-
-            return [$value, $offset + 5];
-        }
-
-        if (IgniteProtocol::TYPE_LONG === $type) {
-            $value = IgniteWire::unpackInt64($bytes, $offset + 1);
-
-            return [$value, $offset + 9];
-        }
-
-        if (IgniteProtocol::TYPE_BYTE_ARRAY === $type) {
-            $length = IgniteWire::unpackInt32($bytes, $offset + 1);
-            if ($length < 0) {
-                throw new \RuntimeException('Ignite reply: negative byte_array length');
-            }
-
-            return [substr($bytes, $offset + 5, $length), $offset + 5 + $length];
-        }
-
-        throw new \RuntimeException('Ignite reply: unsupported data object type '.$type);
-    }
-
     private function packBool(bool $value): string
     {
         return IgniteWire::packInt8($value ? 1 : 0);
-    }
-
-    /**
-     * @return array{0:string,1:int}
-     */
-    private function readStringObject(string $bytes, int $offset): array
-    {
-        $type = IgniteWire::unpackUint8($bytes, $offset);
-        if (IgniteProtocol::TYPE_NULL === $type) {
-            return ['', $offset + 1];
-        }
-
-        if (IgniteProtocol::TYPE_STRING !== $type) {
-            throw new \RuntimeException('Ignite reply: expected string, got type '.$type);
-        }
-
-        $length = IgniteWire::unpackInt32($bytes, $offset + 1);
-        if ($length < 0) {
-            throw new \RuntimeException('Ignite reply: negative string length');
-        }
-
-        return [substr($bytes, $offset + 5, $length), $offset + 5 + $length];
-    }
-
-    private function readBool(string $bytes, int $offset): bool
-    {
-        return 1 === IgniteWire::unpackUint8($bytes, $offset);
     }
 
     private function cacheInfoBody(int $cacheId): string
@@ -586,7 +517,7 @@ final class NativeIgniteClient
         $total = \strlen($data);
         $written = 0;
         while ($written < $total) {
-            $chunk = @fwrite($this->stream, substr($data, $written));
+            $chunk = fwrite($this->stream, substr($data, $written));
             if (false === $chunk || 0 === $chunk) {
                 $this->checkTimeout();
                 throw new \RuntimeException('Ignite write failed');
@@ -609,16 +540,14 @@ final class NativeIgniteClient
         }
 
         $buf = '';
-        $remaining = $length;
-        while ($remaining > 0) {
-            $chunk = @fread($this->stream, $remaining);
+        while (($remaining = $length - \strlen($buf)) > 0) {
+            $chunk = fread($this->stream, $remaining);
             if (false === $chunk || '' === $chunk) {
                 $this->checkTimeout();
                 throw new \RuntimeException('Ignite read truncated');
             }
 
             $buf .= $chunk;
-            $remaining = $length - \strlen($buf);
         }
 
         $this->bytesRead += $length;
