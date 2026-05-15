@@ -283,7 +283,7 @@ final class ValueCodec
             })(),
             MemcachedConstants::SERIALIZER_MSGPACK => (static function () use ($value, &$flags): string {
                 if (!\function_exists('msgpack_pack')) {
-                    throw new \RuntimeException('msgpack not available (value type: '.\get_debug_type($value).')');
+                    throw new \RuntimeException('msgpack not available (value type: '.get_debug_type($value).')');
                 }
 
                 self::setType($flags, self::TYPE_MSGPACK);
