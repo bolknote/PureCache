@@ -339,11 +339,13 @@ The library is intentionally PECL-shaped, but it is not a libmemcached binding. 
 - Server-pool management implemented across every backend: `OPT_SORT_HOSTS`, `OPT_REMOVE_FAILED_SERVERS`, `OPT_SERVER_FAILURE_LIMIT`, `OPT_SERVER_TIMEOUT_LIMIT`, `OPT_RETRY_TIMEOUT`, `OPT_DEAD_TIMEOUT`, `OPT_STORE_RETRY_COUNT`, `OPT_NUMBER_OF_REPLICAS`, `OPT_RANDOMIZE_REPLICA_READ`. Writes fan-out to the primary plus `OPT_NUMBER_OF_REPLICAS` replicas; reads pick a random replica when `OPT_RANDOMIZE_REPLICA_READ` is on; failed primaries are routed around for the configured retry/dead window.
 - `OPT_NO_BLOCK` is accepted and reported like PECL for configuration compatibility, but operations still use blocking PHP streams with configured timeouts rather than libmemcached's non-blocking state machine.
 - Local application storage: `OPT_USER_DATA`.
+- `OPT_LOAD_FROM_FILE`: supported on every backend. A libmemcached-style configuration file is parsed in PHP (`LibmemcachedConfigFile`) and each directive is applied through the normal `setOption()` machinery — this is **not** a native `libmemcached` / PECL extension hook; there is no C binding in PureCache.
+- `OPT_SUPPORT_CAS`: `setOption()` / `getOption()` accept the dial for PECL parity (getter reports `0` / `1` like PECL). Turning it off does **not** strip CAS from the wire or disable `cas()` — the memcached meta client decodes CAS whenever the server sends it, and the Redis / Ignite adapters implement real CAS semantics regardless of this flag.
+- `OPT_TCP_KEEPIDLE`: **Memcached** — when `OPT_TCP_KEEPALIVE` is enabled and idle seconds are > 0, the value is applied with `socket_set_option` on newly opened TCP streams (changing it rebuilds the pool). On platforms where PHP cannot set the knob (notably Windows stream sockets), it is a documented no-op, matching libmemcached’s portability story. **Redis** — `setOption()` returns `RES_NOT_SUPPORTED` (`RedisClient` explicitly rejects TCP keepalive tuning options). **Ignite** — the value is accepted and stored for `getOption()` parity, but the thin-client transport does not apply it to sockets today (no observable effect).
 
 ### Explicitly unsupported
 
 - Protocol/network modes not implemented by the pure PHP meta client: `OPT_BINARY_PROTOCOL`, `OPT_USE_UDP`.
-- File/native-extension integration options: `OPT_LOAD_FROM_FILE`, `OPT_SUPPORT_CAS`, `OPT_TCP_KEEPIDLE`.
 - Authentication: `setSaslAuthData()` returns `RES_NOT_SUPPORTED` on every backend — there is no binary SASL handshake in the pure-PHP transport. Redis credentials are configured via the connection-string URL instead (`redis://user:pass@host/db`).
 - `delete($key, $time)` / `deleteByKey()` / `deleteMulti*()` with a positive delayed-delete time return `RES_NOT_SUPPORTED` on every backend — only immediate deletion is supported. Negative `$time` is rejected with `RES_INVALID_ARGUMENTS`.
 

@@ -28,7 +28,14 @@ return (new PhpCsFixer\Config())
         '@PHP83Migration' => true,
         'declare_strict_types' => true,
         'strict_param' => true,
+        'strict_comparison' => true,
         'array_syntax' => ['syntax' => 'short'],
+        'native_function_invocation' => [
+            'include' => [PhpCsFixer\Fixer\FunctionNotation\NativeFunctionInvocationFixer::SET_COMPILER_OPTIMIZED],
+            'scope' => 'namespaced',
+            'strict' => true,
+        ],
         'php_unit_test_case_static_method_calls' => ['call_type' => 'self'],
+        'php_unit_strict' => true,
     ])
     ->setFinder($finder);

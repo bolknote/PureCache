@@ -1,4 +1,5 @@
 includes:
+    - ../vendor/phpstan/phpstan/conf/bleedingEdge.neon
     - ../vendor/phpstan/phpstan-strict-rules/rules.neon
     - ../vendor/phpstan/phpstan-deprecation-rules/rules.neon
     - ../vendor/phpstan/phpstan-phpunit/extension.neon
@@ -7,6 +8,8 @@ includes:
 
 parameters:
     level: 10
+    # Stricter than defaults: do not widen trusted PHPDoc types when inferring.
+    treatPhpDocTypesAsCertain: false
     paths:
         - ../src
         - ../tests

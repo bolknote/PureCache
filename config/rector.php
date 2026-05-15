@@ -24,8 +24,4 @@ return RectorConfig::configure()
         typeDeclarations: true,
         privatization: true,
         earlyReturn: true
-    )
-    ->withSkip([
-        Rector\TypeDeclaration\Rector\ClassMethod\StrictArrayParamDimFetchRector::class,
-        Rector\Php81\Rector\FuncCall\NullToStrictStringFuncCallArgRector::class,
-    ]);
+    );

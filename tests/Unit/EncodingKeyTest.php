@@ -105,7 +105,7 @@ final class EncodingKeyTest extends TestCase
                 continue;
             }
 
-            self::assertEquals($value, $decoded);
+            self::assertSame($value, $decoded);
         }
     }
 
