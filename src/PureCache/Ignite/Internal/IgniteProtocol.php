@@ -62,6 +62,12 @@ final class IgniteProtocol
 
     public const int OP_QUERY_SCAN_CURSOR_GET_PAGE = 2001;
 
+    public const int OP_QUERY_SQL_FIELDS = 2004;
+
+    public const int OP_QUERY_SQL_FIELDS_CURSOR_GET_PAGE = 2005;
+
+    public const int SQL_STATEMENT_SELECT = 1;
+
     /** Object type prefix bytes used in cache key/value payloads. */
     public const int TYPE_INT = 3;
 

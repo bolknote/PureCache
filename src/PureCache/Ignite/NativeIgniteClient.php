@@ -15,8 +15,9 @@ use PureCache\Ignite\Internal\IgniteWire;
  *
  * Speaks the v1.2.0 binary client protocol directly over a TCP stream — no
  * external Ignite PHP package is pulled in. Only the request/response shapes
- * exercised by {@see IgniteClient} are implemented (no SQL, no binary type
- * registration), so the surface area stays small and reviewable.
+ * exercised by {@see IgniteClient} are implemented (plus {@code OP_QUERY_SQL_FIELDS}
+ * for cluster version discovery). No binary type registration, so the surface
+ * area stays small and reviewable.
  *
  * Each instance multiplexes requests onto a single socket and pairs them with
  * server replies by the auto-incrementing {@code requestId} that the protocol
@@ -24,6 +25,10 @@ use PureCache\Ignite\Internal\IgniteWire;
  */
 final class NativeIgniteClient
 {
+    private const string CLUSTER_VERSION_SQL = 'SELECT VERSION FROM "SYS"."NODES"';
+
+    private const string CLUSTER_VERSION_SCHEMA = 'SYS';
+
     /** @var resource|null */
     private $stream;
 
@@ -97,6 +102,7 @@ final class NativeIgniteClient
         fclose($this->stream);
         $this->stream = null;
         $this->connectedAt = 0;
+        $this->serverVersion = '';
         $this->bytesRead = 0;
         $this->bytesWritten = 0;
         $this->opCounts = [];
@@ -109,6 +115,22 @@ final class NativeIgniteClient
 
     public function getServerVersion(): string
     {
+        return $this->serverVersion;
+    }
+
+    /**
+     * Resolves the Ignite cluster product version via {@code SYS.NODES} and caches
+     * it for {@see getServerVersion()} / stats. Requires the named cache to exist
+     * on the node (call after {@code cacheGetOrCreate}).
+     */
+    public function resolveProductVersion(int $cacheId): string
+    {
+        if ('' !== $this->serverVersion) {
+            return $this->serverVersion;
+        }
+
+        $this->serverVersion = $this->queryClusterVersion($cacheId);
+
         return $this->serverVersion;
     }
 
@@ -301,8 +323,65 @@ final class NativeIgniteClient
             throw new \RuntimeException(\sprintf('Ignite handshake failed (server %d.%d.%d): %s', $major, $minor, $patch, $message));
         }
 
-        $this->serverVersion = \sprintf('%d.%d.%d', IgniteProtocol::PROTOCOL_MAJOR, IgniteProtocol::PROTOCOL_MINOR, IgniteProtocol::PROTOCOL_PATCH);
         $this->connectedAt = time();
+    }
+
+    private function queryClusterVersion(int $cacheId): string
+    {
+        $body = $this->cacheInfoBody($cacheId)
+            .IgniteCacheCodec::encodeStringObject(self::CLUSTER_VERSION_SCHEMA)
+            .IgniteWire::packInt32(1)
+            .IgniteWire::packInt32(1)
+            .IgniteCacheCodec::encodeStringObject(self::CLUSTER_VERSION_SQL)
+            .IgniteWire::packInt32(0)
+            .IgniteWire::packInt8(IgniteProtocol::SQL_STATEMENT_SELECT)
+            .$this->packBool(false)
+            .$this->packBool(false)
+            .$this->packBool(false)
+            .$this->packBool(false)
+            .$this->packBool(false)
+            .$this->packBool(false)
+            .IgniteWire::packInt64(5_000)
+            .$this->packBool(false);
+
+        $response = $this->execute(IgniteProtocol::OP_QUERY_SQL_FIELDS, $body);
+
+        try {
+            return $this->parseSqlFieldsFirstCell($response);
+        } finally {
+            $cursorId = IgniteWire::unpackInt64($response, 0);
+            if (0 !== $cursorId) {
+                $this->closeResource($cursorId);
+            }
+        }
+    }
+
+    private function closeResource(int $resourceId): void
+    {
+        $this->execute(IgniteProtocol::OP_RESOURCE_CLOSE, IgniteWire::packInt64($resourceId));
+    }
+
+    private function parseSqlFieldsFirstCell(string $response): string
+    {
+        if (\strlen($response) < 16) {
+            throw new \RuntimeException('Ignite SQL fields reply too short');
+        }
+
+        $columnCount = IgniteWire::unpackInt32($response, 8);
+        $offset = 12;
+        $rowCount = IgniteWire::unpackInt32($response, $offset);
+        $offset += 4;
+
+        for ($row = 0; $row < $rowCount; ++$row) {
+            for ($col = 0; $col < $columnCount; ++$col) {
+                [$value, $offset] = $this->readDataObject($response, $offset);
+                if (null !== $value && '' !== (string) $value) {
+                    return (string) $value;
+                }
+            }
+        }
+
+        throw new \RuntimeException('Ignite SQL fields query returned no VERSION value');
     }
 
     private function execute(int $opCode, string $body): string
@@ -414,6 +493,52 @@ final class NativeIgniteClient
      * Reads one type-prefixed {@code String} object and returns the decoded
      * value along with the next read offset.
      *
+     * @return array{0:string,1:int}
+     */
+    /**
+     * @return array{0:string|int|null,1:int}
+     */
+    private function readDataObject(string $bytes, int $offset): array
+    {
+        $type = IgniteWire::unpackUint8($bytes, $offset);
+        if (IgniteProtocol::TYPE_NULL === $type) {
+            return [null, $offset + 1];
+        }
+
+        if (IgniteProtocol::TYPE_STRING === $type) {
+            return $this->readStringObject($bytes, $offset);
+        }
+
+        if (IgniteProtocol::TYPE_INT === $type) {
+            $value = IgniteWire::unpackInt32($bytes, $offset + 1);
+
+            return [$value, $offset + 5];
+        }
+
+        if (IgniteProtocol::TYPE_LONG === $type) {
+            $value = IgniteWire::unpackInt64($bytes, $offset + 1);
+
+            return [$value, $offset + 9];
+        }
+
+        if (IgniteProtocol::TYPE_BYTE_ARRAY === $type) {
+            $length = IgniteWire::unpackInt32($bytes, $offset + 1);
+            if ($length < 0) {
+                throw new \RuntimeException('Ignite reply: negative byte_array length');
+            }
+
+            return [substr($bytes, $offset + 5, $length), $offset + 5 + $length];
+        }
+
+        throw new \RuntimeException('Ignite reply: unsupported data object type '.$type);
+    }
+
+    private function packBool(bool $value): string
+    {
+        return IgniteWire::packInt8($value ? 1 : 0);
+    }
+
+    /**
      * @return array{0:string,1:int}
      */
     private function readStringObject(string $bytes, int $offset): array

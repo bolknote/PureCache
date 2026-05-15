@@ -34,6 +34,25 @@ final class IgniteIntegrationTest extends MemcachedLikeIntegrationTestCase
         return $client;
     }
 
+    public function testVersionReportsClusterProductNotThinProtocol(): void
+    {
+        $m = $this->createClient();
+        $v = $m->getVersion();
+        self::assertIsArray($v);
+        $label = self::integrationHost().':'.self::integrationPort();
+        self::assertArrayHasKey($label, $v);
+        $version = $v[$label];
+        self::assertNotSame('', $version);
+        self::assertNotSame('1.2.0', $version, 'must be Ignite cluster VERSION from SYS.NODES, not thin-client protocol level');
+        self::assertMatchesRegularExpression('/\d+\.\d+/', $version);
+
+        $stats = $m->getStats();
+        self::assertIsArray($stats);
+        self::assertArrayHasKey($label, $stats);
+        self::assertIsArray($stats[$label]);
+        self::assertSame($version, $stats[$label]['version'] ?? null);
+    }
+
     public function testCasOnAddedKeyExposesStableToken(): void
     {
         $key = 'pure_ig_cas_add_'.bin2hex(random_bytes(8));

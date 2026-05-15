@@ -493,6 +493,12 @@ final class IgniteClient extends AbstractCacheClient
 
         $result = $this->collectFromServers(fn (int $i): array => $this->buildStats($this->clientFor($i), $this->cacheIdFor($i), $type), false);
 
+        if (!$result['allOk'] && !$result['anyOk']) {
+            $this->setResult(self::RES_FAILURE, 'Ignite stats failed: cluster version query requires SQL access to SYS.NODES');
+
+            return false;
+        }
+
         $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
 
         return $result['values'];
@@ -508,7 +514,16 @@ final class IgniteClient extends AbstractCacheClient
             return false;
         }
 
-        $result = $this->collectFromServers(fn (int $i): string => $this->clientFor($i)->getServerVersion(), '');
+        $result = $this->collectFromServers(
+            fn (int $i): string => $this->clientFor($i)->resolveProductVersion($this->cacheIdFor($i)),
+            '',
+        );
+
+        if (!$result['allOk'] && !$result['anyOk']) {
+            $this->setResult(self::RES_FAILURE, 'Ignite version query requires SQL access to SYS.NODES');
+
+            return false;
+        }
 
         $this->setResult($result['allOk'] ? self::RES_SUCCESS : self::RES_SOME_ERRORS);
 
@@ -915,6 +930,7 @@ final class IgniteClient extends AbstractCacheClient
      */
     private function buildStats(NativeIgniteClient $client, int $cacheId, ?string $type): array
     {
+        $client->resolveProductVersion($cacheId);
         $count = $client->cacheGetSize($cacheId);
         $snapshot = $client->getStatsSnapshot();
 
