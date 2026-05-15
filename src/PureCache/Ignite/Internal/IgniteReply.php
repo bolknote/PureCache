@@ -23,9 +23,7 @@ final class IgniteReply
         }
 
         if ($length > self::MAX_FRAME_BYTES) {
-            throw new \RuntimeException(
-                'Ignite reply: frame length '.$length.' exceeds maximum '.self::MAX_FRAME_BYTES,
-            );
+            throw new \RuntimeException('Ignite reply: frame length '.$length.' exceeds maximum '.self::MAX_FRAME_BYTES);
         }
     }
 

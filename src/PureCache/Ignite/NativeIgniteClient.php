@@ -411,9 +411,9 @@ final class NativeIgniteClient
     {
         try {
             return $this->executeOnce($opCode, $body);
-        } catch (\RuntimeException $exception) {
-            if (!$this->isRetriableTransportFailure($exception)) {
-                throw $exception;
+        } catch (\RuntimeException $runtimeException) {
+            if (!$this->isRetriableTransportFailure($runtimeException)) {
+                throw $runtimeException;
             }
 
             $this->reconnectTransport();

@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Rector\Config\RectorConfig;
+use Rector\DeadCode\Rector\ClassMethod\RemoveParentDelegatingConstructorRector;
 use Rector\Php83\Rector\ClassMethod\AddOverrideAttributeToOverriddenMethodsRector;
 
 $root = dirname(__DIR__);
@@ -24,4 +25,10 @@ return RectorConfig::configure()
         typeDeclarations: true,
         privatization: true,
         earlyReturn: true
-    );
+    )
+    ->withSkip([
+        // Keeps public readonly statusCode alongside RuntimeException::getCode().
+        RemoveParentDelegatingConstructorRector::class => [
+            $root.'/src/PureCache/Ignite/IgniteCommandException.php',
+        ],
+    ]);
