@@ -18,6 +18,9 @@ final class StreamConnection
 
     private string $writeBuffer = '';
 
+    /** Buffered {@see bufferWrite()} calls since the last successful {@see flushWrite()}. */
+    private int $bufferedMessageCount = 0;
+
     public function __construct(
         private readonly string $host,
         private readonly int $port,
@@ -32,6 +35,7 @@ final class StreamConnection
         private readonly bool $tcpCork = false,
         private readonly int $pollTimeoutMs = 1000,
         private readonly int $ioBytesWatermark = 0,
+        private readonly int $ioMsgWatermark = 0,
         private readonly int $tcpKeepIdleSec = 0,
     ) {
     }
@@ -335,6 +339,7 @@ final class StreamConnection
         $this->readBuffer = '';
         $this->readOffset = 0;
         $this->writeBuffer = '';
+        $this->bufferedMessageCount = 0;
     }
 
     public function bufferWrite(string $data): void
@@ -342,6 +347,15 @@ final class StreamConnection
         $this->writeBuffer .= $data;
         if ($this->ioBytesWatermark > 0 && \strlen($this->writeBuffer) >= $this->ioBytesWatermark) {
             $this->flushWrite();
+
+            return;
+        }
+
+        if ($this->ioMsgWatermark > 0) {
+            ++$this->bufferedMessageCount;
+            if ($this->bufferedMessageCount >= $this->ioMsgWatermark) {
+                $this->flushWrite();
+            }
         }
     }
 
@@ -436,6 +450,7 @@ final class StreamConnection
         }
 
         $this->writeBuffer = '';
+        $this->bufferedMessageCount = 0;
     }
 
     /**

@@ -75,6 +75,7 @@ final class ConnectionManager
                 $this->tcpCork,
                 $this->pollTimeoutMs,
                 $this->ioBytesWatermark,
+                $this->ioMsgWatermark,
                 $this->tcpKeepIdleSec,
             );
         }

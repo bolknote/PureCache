@@ -10,11 +10,12 @@ use PureCache\Memcached\Internal\MemcachedClientCore;
 use PureCache\Memcached\MemcachedClient;
 
 /**
- * Wire-free coverage that the memcached-only transport tuning options
+ * Wire-free coverage that memcached transport tuning options
  * ({@code OPT_CORK}, {@code OPT_POLL_TIMEOUT}, {@code OPT_IO_BYTES_WATERMARK},
- * {@code OPT_IO_MSG_WATERMARK}, {@code OPT_IO_KEY_PREFETCH}) actually reach
- * the {@see ConnectionManager} / {@see \PureCache\Memcached\Internal\StreamConnection}
- * pair after a {@code setOption()}.
+ * {@code OPT_IO_MSG_WATERMARK}, {@code OPT_IO_KEY_PREFETCH}) reach
+ * {@see ConnectionManager} after {@code setOption()}, and that byte/msg
+ * watermarks are forwarded into {@see \PureCache\Memcached\Internal\StreamConnection}
+ * (see {@see StreamConnectionIoMsgWatermarkTest} for msg-watermark flush behaviour).
  *
  * We can't open real sockets in unit tests, but we can verify the
  * constructor values via reflection — that catches the most likely

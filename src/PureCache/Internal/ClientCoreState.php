@@ -87,7 +87,17 @@ abstract class ClientCoreState
      */
     public function applyIniDefaults(array $snapshot): void
     {
-        $this->options[MemcachedConstants::OPT_SERIALIZER] = $snapshot['serializer'];
+        // INI default string is {@code php} while {@see ClientOptions::defaultSerializer()}
+        // follows igbinary/msgpack/PHP when those extensions are loaded; only
+        // override with the snapshot when it is not that stock PHP mapping.
+        $iniSerializer = $snapshot['serializer'];
+        $runtimeDefault = ClientOptions::defaultSerializer();
+        if (MemcachedConstants::SERIALIZER_PHP === $iniSerializer
+            && MemcachedConstants::SERIALIZER_PHP !== $runtimeDefault) {
+            $this->options[MemcachedConstants::OPT_SERIALIZER] = $runtimeDefault;
+        } else {
+            $this->options[MemcachedConstants::OPT_SERIALIZER] = $iniSerializer;
+        }
         $this->options[MemcachedConstants::OPT_COMPRESSION_TYPE] = $snapshot['compression_type'];
         $this->options[MemcachedConstants::OPT_COMPRESSION_LEVEL] = $snapshot['compression_level'];
         $this->options[MemcachedConstants::OPT_STORE_RETRY_COUNT] = $snapshot['store_retry_count'];

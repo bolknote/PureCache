@@ -90,6 +90,18 @@ final class MemcachedClient extends AbstractCacheClient
         return $this->state();
     }
 
+    /**
+     * Keys per meta-protocol pipeline window on one TCP connection.
+     * When {@see self::OPT_IO_KEY_PREFETCH} is 0, all keys for the shard are
+     * sent before any response is read (maximum single-round pipelining).
+     */
+    private function metaGetPipelineChunkSize(int $pairCount): int
+    {
+        $prefetch = $this->optionInt(self::OPT_IO_KEY_PREFETCH, 0);
+
+        return $prefetch > 0 ? $prefetch : max(1, $pairCount);
+    }
+
     // -----------------------------------------------------------------------
     // Read paths
     // -----------------------------------------------------------------------
@@ -137,21 +149,25 @@ final class MemcachedClient extends AbstractCacheClient
         foreach ($byServer as $serverIdx => $pairs) {
             try {
                 $c = $core->conn->get($serverIdx);
-                foreach ($pairs as [, $pk]) {
-                    $this->send($c, MetaCommandBuilder::metaGetValue($pk));
-                }
-
-                $reader = new MetaReader($c);
-                foreach ($pairs as [$orig]) {
-                    $item = $this->readDecodedMetaValue($reader);
-                    if (false === $item) {
-                        $hadFailure = true;
-                        continue;
+                $chunk = $this->metaGetPipelineChunkSize(\count($pairs));
+                for ($offset = 0, $total = \count($pairs); $offset < $total; $offset += $chunk) {
+                    $slice = \array_slice($pairs, $offset, $chunk);
+                    foreach ($slice as [, $pk]) {
+                        $this->send($c, MetaCommandBuilder::metaGetValue($pk));
                     }
 
-                    $hadSuccess = true;
-                    if ($item->found) {
-                        $found[$orig] = $this->valueForGetFlags($this->entryFromMeta($item), $getFlags);
+                    $reader = new MetaReader($c);
+                    foreach ($slice as [$orig]) {
+                        $item = $this->readDecodedMetaValue($reader);
+                        if (false === $item) {
+                            $hadFailure = true;
+                            continue;
+                        }
+
+                        $hadSuccess = true;
+                        if ($item->found) {
+                            $found[$orig] = $this->valueForGetFlags($this->entryFromMeta($item), $getFlags);
+                        }
                     }
                 }
             } catch (\Throwable $throwable) {
@@ -201,19 +217,23 @@ final class MemcachedClient extends AbstractCacheClient
             foreach ($byServer as $serverIdx => $pairs) {
                 $currentIdx = $serverIdx;
                 $c = $core->conn->get($serverIdx);
-                foreach ($pairs as [, $pk]) {
-                    $this->send($c, MetaCommandBuilder::metaGetValue($pk));
-                }
-
-                $reader = new MetaReader($c);
-                foreach ($pairs as [$orig]) {
-                    $item = $this->readDecodedMetaValue($reader);
-                    if (false === $item) {
-                        return false;
+                $chunk = $this->metaGetPipelineChunkSize(\count($pairs));
+                for ($offset = 0, $total = \count($pairs); $offset < $total; $offset += $chunk) {
+                    $slice = \array_slice($pairs, $offset, $chunk);
+                    foreach ($slice as [, $pk]) {
+                        $this->send($c, MetaCommandBuilder::metaGetValue($pk));
                     }
 
-                    if ($item->found) {
-                        $results[] = $this->delayedEntry($orig, $this->entryFromMeta($item), $withCas);
+                    $reader = new MetaReader($c);
+                    foreach ($slice as [$orig]) {
+                        $item = $this->readDecodedMetaValue($reader);
+                        if (false === $item) {
+                            return false;
+                        }
+
+                        if ($item->found) {
+                            $results[] = $this->delayedEntry($orig, $this->entryFromMeta($item), $withCas);
+                        }
                     }
                 }
             }
@@ -243,22 +263,26 @@ final class MemcachedClient extends AbstractCacheClient
             foreach ($byServer as $serverIdx => $pairs) {
                 $currentIdx = $serverIdx;
                 $c = $core->conn->get($serverIdx);
-                foreach ($pairs as [, $pk]) {
-                    $this->send($c, MetaCommandBuilder::metaGetValue($pk));
-                }
-
-                $reader = new MetaReader($c);
-                foreach ($pairs as [$orig]) {
-                    $item = $this->readDecodedMetaValue($reader);
-                    if (false === $item) {
-                        continue;
+                $chunk = $this->metaGetPipelineChunkSize(\count($pairs));
+                for ($offset = 0, $total = \count($pairs); $offset < $total; $offset += $chunk) {
+                    $slice = \array_slice($pairs, $offset, $chunk);
+                    foreach ($slice as [, $pk]) {
+                        $this->send($c, MetaCommandBuilder::metaGetValue($pk));
                     }
 
-                    if (!$item->found) {
-                        continue;
-                    }
+                    $reader = new MetaReader($c);
+                    foreach ($slice as [$orig]) {
+                        $item = $this->readDecodedMetaValue($reader);
+                        if (false === $item) {
+                            continue;
+                        }
 
-                    $valueCb($this, $this->delayedEntry($orig, $this->entryFromMeta($item), $withCas));
+                        if (!$item->found) {
+                            continue;
+                        }
+
+                        $valueCb($this, $this->delayedEntry($orig, $this->entryFromMeta($item), $withCas));
+                    }
                 }
             }
         } catch (\Throwable $throwable) {
