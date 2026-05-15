@@ -4,7 +4,10 @@
     "type": "library",
     "license": "MIT",
     "config": {
-        "process-timeout": 0
+        "process-timeout": 0,
+        "platform": {
+            "php": "8.3.31"
+        }
     },
     "require": {
         "php": "^8.3",
