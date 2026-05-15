@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace PureCache\Ignite;
 
 use PureCache\Internal\ClientCoreState;
-use PureCache\Internal\ClientOptions;
-use PureCache\Internal\ServerSelector;
 
 /**
  * Mutable connection state shared by {@see IgniteClient} instances that reuse a
@@ -28,9 +26,7 @@ final class IgniteClientState extends ClientCoreState
     public static function createFresh(?string $persistentId = null): self
     {
         $state = new self();
-        $state->persistentId = $persistentId;
-        $state->selector = new ServerSelector();
-        $state->options = ClientOptions::defaults();
+        $state->initDefaults($persistentId);
 
         return $state;
     }
