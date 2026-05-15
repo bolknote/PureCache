@@ -125,6 +125,7 @@ Those methods send the same classic **text** one-liners on the same socket (afte
 - A memcached **1.6+** server for integration tests
 - `ext-zlib` recommended for compression parity
 - `ext-igbinary` optional for `SERIALIZER_IGBINARY` parity
+- `ext-msgpack` optional for `SERIALIZER_MSGPACK` parity
 - `ext-fastlz` optional for FastLZ wire compatibility
 
 ## Install
@@ -225,12 +226,11 @@ If you want to supply your own backend (different host, custom `OPT_*` configura
 ## Apache Ignite backend notes
 
 - Speaks the Apache Ignite **thin-client binary protocol v1.2.0** over plain TCP (default port 10800). No third-party Ignite PHP package is required.
-- All entries live in a single Ignite cache (`PURECACHE_V1`), automatically created on first use via `OP_CACHE_GET_OR_CREATE_WITH_NAME`. Each entry is a `byte[]` value with a 16-byte header carrying CAS, F-flags, and payload length, followed by the same payload bytes the memcached/Redis backends store.
-- CAS is a 63-bit positive token kept inside the value header — it is **not** the Ignite entry version. `cas($token, …)` reads the wrapper, compares the header, and commits the new wrapper atomically through `OP_CACHE_REPLACE_IF_EQUALS`, so the check-and-set is one server round-trip without a leaked race window.
-- `append`/`prepend` and `increment`/`decrement` run a short optimistic retry loop on top of the same `REPLACE_IF_EQUALS` operator (Ignite has no scriptable server-side equivalent of Redis Lua).
+- All entries live in a single Ignite cache (`PURECACHE_V1`), automatically created on first use via `OP_CACHE_GET_OR_CREATE_WITH_NAME`. Each entry is a `byte[]` whose first 24 bytes are a little-endian header — 63-bit CAS token, F-flags, `expireAt` (absolute Unix timestamp; `0` = never expires), payload length — followed by the same serialized payload bytes the memcached/Redis backends store. Ignite's thin client has no per-key TTL opcode, so expiry lives in this wrapper instead of a server-side TTL field.
+- CAS is kept inside that header — it is **not** the Ignite entry version. `cas($token, …)` compares the stored wrapper and commits the new one atomically through `OP_CACHE_REPLACE_IF_EQUALS`, so the check-and-set is one server round-trip without a leaked race window.
+- TTL follows the same memcached rules as the other backends on `set` / `setMulti` (≤30 days → relative seconds, larger values → absolute Unix timestamp), stored as `expireAt` in the wrapper. Expiration is enforced lazily on read: stale entries are treated as `RES_NOTFOUND` and best-effort removed. `touch($key, $exp)` rewrites `expireAt` while preserving CAS. `append` / `prepend` and `increment` / `decrement` preserve the existing `expireAt` and use a short optimistic `REPLACE_IF_EQUALS` retry loop (Ignite has no scriptable server-side equivalent of Redis Lua).
 - `addServer()` endpoints are treated as independent shards, identically to the Redis backend. For a real Ignite cluster, register one endpoint and let the cluster handle partitioning.
 - `flush($delay > 0)` returns `RES_NOT_SUPPORTED` (`flush delay not supported on Ignite`); `flush(0)` clears the cache via `OP_CACHE_CLEAR`.
-- Per-key TTL on `set` / `setMulti` is silently ignored. The shared cache is opened with whatever expiry policy is configured server-side; if none is configured, entries live until they are explicitly overwritten or removed. `touch()` reduces to a key-existence check (returns `RES_SUCCESS` if the key is present, `RES_NOTFOUND` otherwise) and the new expiration value is not applied.
 - `setSaslAuthData()` returns `RES_NOT_SUPPORTED` (no binary SASL handshake on the thin client). `setEncodingKey()` works the same as on every other backend — encryption happens client-side in the value codec before each `OP_CACHE_PUT` and after each `OP_CACHE_GET`, so the encoded payload is opaque to the server.
 
 ## Backend differences
@@ -244,11 +244,11 @@ places where backend semantics diverge in observable ways.
 | Max key length | 250 B (protocol-mandated) | 65 536 B | 65 536 B |
 | Connection-string forms | `host:port`, `host:port:weight` | `host[:port]`, `redis://[user:pass@]host:port[/db]`, `rediss://...` (auth via `AUTH`, db via `SELECT`) | `host[:port]` |
 | Multi-server endpoints | true client-side sharding (Ketama / modula) | independent shards via the same `ServerSelector`; for Redis Cluster register a single endpoint | independent shards; for an Ignite cluster register one endpoint and let the server-side partitioner do the work |
-| TTL semantics on `set` / `setMulti` | ≤30 days → relative seconds, >30 days → absolute Unix ts | same as memcached (normalized client-side before `EVAL`) | per-key TTL **silently ignored**; expiry policy is whatever the shared cache is configured with on the server |
-| `touch($key, $exp)` | sets new TTL via meta `mt`/`mg` semantics | sets new TTL atomically via Lua | reduces to existence check — returns `RES_SUCCESS` / `RES_NOTFOUND`, **does not** change the entry's expiry |
+| TTL semantics on `set` / `setMulti` | ≤30 days → relative seconds, >30 days → absolute Unix ts | same as memcached (normalized client-side before `EVAL`) | same conversion rules; stored as absolute `expireAt` in the 24-byte wrapper and enforced lazily on read (no Ignite server TTL opcode) |
+| `touch($key, $exp)` | sets new TTL via meta `mt`/`mg` semantics | sets new TTL atomically via Lua | rewrites `expireAt` in the wrapper (CAS preserved) via optimistic `REPLACE_IF_EQUALS`; stale/missing keys → `RES_NOTFOUND` |
 | `flush(0)` | text `flush_all` | RESP `FLUSHDB` | `OP_CACHE_CLEAR` |
 | `flush($delay > 0)` | text `flush_all <delay>` (server-side scheduled flush) | `RES_NOT_SUPPORTED` (`flush delay not supported on Redis`) | `RES_NOT_SUPPORTED` (`flush delay not supported on Ignite`) |
-| CAS implementation | meta `cs` / `cas` token (one round-trip) | Lua `EVAL` that compares + swaps atomically | 63-bit positive token kept inside a 16-byte value header; commit via `OP_CACHE_REPLACE_IF_EQUALS` (single round-trip) |
+| CAS implementation | meta `cs` / `cas` token (one round-trip) | Lua `EVAL` that compares + swaps atomically | 63-bit positive token in the 24-byte wrapper header; commit via `OP_CACHE_REPLACE_IF_EQUALS` (single round-trip) |
 | `append` / `prepend` atomicity | native meta `ms` mode | server-side Lua | optimistic retry loop on `REPLACE_IF_EQUALS` |
 | `increment` / `decrement` (with `initial_value` + `expiry`) | meta `ma` with autovivify | Lua script seeds the long counter and applies expiry atomically | same `initial_value` + `expiry` semantics via the optimistic-retry loop |
 | `setMulti` / `setMultiByKey` batching | grouped meta `ms` writes per server, replies read in order | pipelined `EVALSHA` per server (one TCP round-trip, replies read in order) | per-item sequential stores (no `OP_CACHE_PUT_ALL` pipelining yet) |
