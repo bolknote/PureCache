@@ -30,7 +30,7 @@ final class ServerSelector
     private ?ServerFailureTracker $failureTracker = null;
 
     /** @var \Closure(int): int */
-    private \Closure $rng;
+    private readonly \Closure $rng;
 
     public function __construct()
     {
