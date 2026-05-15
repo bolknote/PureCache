@@ -735,19 +735,18 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             return false;
         }
 
-        if (null === $this->core->delayedResults && !$this->primeDelayedResults()) {
+        $current = $this->pullDelayedResultsBatch();
+        if (null === $current) {
             return false;
         }
 
-        $current = $this->requireDelayedResults();
         if ($this->core->delayedCursor >= \count($current) && [] !== $this->core->delayedQueue) {
             $this->core->delayedResults = null;
             $this->core->delayedCursor = 0;
-            if (!$this->primeDelayedResults()) {
+            $current = $this->pullDelayedResultsBatch();
+            if (null === $current) {
                 return false;
             }
-
-            $current = $this->requireDelayedResults();
         }
 
         if ($this->core->delayedCursor >= \count($current)) {
@@ -774,19 +773,21 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             return false;
         }
 
-        if (null === $this->core->delayedResults && !$this->primeDelayedResults()) {
+        $batch = $this->pullDelayedResultsBatch();
+        if (null === $batch) {
             return false;
         }
 
-        $all = \array_slice($this->requireDelayedResults(), $this->core->delayedCursor);
+        $all = \array_slice($batch, $this->core->delayedCursor);
         while ([] !== $this->core->delayedQueue) {
             $this->core->delayedResults = null;
             $this->core->delayedCursor = 0;
-            if (!$this->primeDelayedResults()) {
+            $next = $this->pullDelayedResultsBatch();
+            if (null === $next) {
                 return false;
             }
 
-            $all = array_merge($all, $this->requireDelayedResults());
+            $all = array_merge($all, $next);
         }
 
         $this->core->delayedResults = [];
@@ -1872,16 +1873,21 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
     }
 
     /**
-     * @return list<array<string, mixed>>
+     * Returns the active delayed-fetch batch, priming the next queue chunk when needed.
+     *
+     * @return list<array<string, mixed>>|null {@code null} when priming failed ({@see getResultCode()} is set)
      */
-    private function requireDelayedResults(): array
+    private function pullDelayedResultsBatch(): ?array
     {
-        $results = $this->core->delayedResults;
-        if (null === $results) {
-            throw new \LogicException('delayed results not primed');
+        if (null !== $this->core->delayedResults) {
+            return $this->core->delayedResults;
         }
 
-        return $results;
+        if (!$this->primeDelayedResults()) {
+            return null;
+        }
+
+        return $this->core->delayedResults;
     }
 
     private function primeDelayedResults(): bool
@@ -1965,7 +1971,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             return false;
         }
 
-        $expiration = $expirationRef;
+        $expiration = $this->normalizeCacheCbExpiration($expirationRef);
 
         if (null === $serverKey) {
             $this->set($key, $value, $expiration);
@@ -1999,6 +2005,23 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         }
 
         return '';
+    }
+
+    /**
+     * PECL {@code cache_cb} passes expiration by-ref as {@code int}, but PHP does not
+     * enforce the type when user callbacks assign floats or numeric strings.
+     */
+    private function normalizeCacheCbExpiration(mixed $expiration): int
+    {
+        if (\is_int($expiration)) {
+            return $expiration;
+        }
+
+        if (is_numeric($expiration)) {
+            return (int) $expiration;
+        }
+
+        return 0;
     }
 
     private function coerceInt(mixed $value): int

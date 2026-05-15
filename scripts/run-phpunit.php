@@ -27,14 +27,36 @@ $command[] = $projectRoot.'/vendor/bin/phpunit';
 $command = array_merge($command, array_slice($argv, 1));
 
 $process = proc_open($command, [
-    0 => \STDIN,
-    1 => \STDOUT,
-    2 => \STDERR,
+    ['file', '/dev/null', 'r'],
+    ['pipe', 'w'],
+    ['pipe', 'w'],
 ], $pipes, $projectRoot, null, ['bypass_shell' => true]);
 
 if (!is_resource($process)) {
     fwrite(\STDERR, "Failed to start PHPUnit.\n");
     exit(1);
+}
+
+stream_set_blocking($pipes[1], false);
+stream_set_blocking($pipes[2], false);
+
+while (true) {
+    $stdout = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    if (false !== $stdout && '' !== $stdout) {
+        fwrite(\STDOUT, $stdout);
+    }
+
+    if (false !== $stderr && '' !== $stderr) {
+        fwrite(\STDERR, $stderr);
+    }
+
+    $status = proc_get_status($process);
+    if (!$status['running']) {
+        break;
+    }
+
+    usleep(50_000);
 }
 
 $code = proc_close($process);

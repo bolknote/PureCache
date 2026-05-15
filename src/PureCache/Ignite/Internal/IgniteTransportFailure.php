@@ -11,6 +11,7 @@ enum IgniteTransportFailure
 {
     case NotConnected;
     case WriteFailed;
+    case WriteTimedOut;
     case ReadTruncated;
     case ReadTimedOut;
     case ConnectionClosed;
@@ -27,6 +28,7 @@ enum IgniteTransportFailure
         return match ($this) {
             self::NotConnected => 'Ignite not connected',
             self::WriteFailed => 'Ignite write failed',
+            self::WriteTimedOut => 'Ignite write timed out',
             self::ReadTruncated => 'Ignite read truncated',
             self::ReadTimedOut => 'Ignite read timed out',
             self::ConnectionClosed => 'Ignite connection closed by peer',

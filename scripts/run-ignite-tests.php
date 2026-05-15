@@ -92,7 +92,7 @@ if (isset($args[0]) && str_starts_with($args[0], 'tests/')) {
 }
 
 $testCommand = array_merge(
-    [\PHP_BINARY],
+    phpCommandPrefix(),
     [
         $phpunit,
         '--configuration=config/phpunit.xml',
@@ -618,4 +618,38 @@ function drain($input, $output): void
     while ('' !== ($chunk = fread($input, 8192)) && false !== $chunk) {
         fwrite($output, $chunk);
     }
+}
+
+/**
+ * @return non-empty-list<string>
+ */
+function phpCommandPrefix(): array
+{
+    $command = [\PHP_BINARY];
+
+    return addOptionalExtension($command, 'igbinary', 'IGBINARY_PECL_EXTENSION');
+}
+
+/**
+ * @param non-empty-list<string> $command
+ *
+ * @return non-empty-list<string>
+ */
+function addOptionalExtension(array $command, string $extension, string $envName): array
+{
+    if (extension_loaded($extension)) {
+        return $command;
+    }
+
+    $extensionPath = getenv($envName);
+    if (!is_string($extensionPath) || '' === $extensionPath) {
+        $extensionPath = ini_get('extension_dir').\DIRECTORY_SEPARATOR.$extension.'.'.\PHP_SHLIB_SUFFIX;
+    }
+
+    if (is_file($extensionPath)) {
+        $command[] = '-d';
+        $command[] = 'extension='.$extensionPath;
+    }
+
+    return $command;
 }

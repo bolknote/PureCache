@@ -17,4 +17,14 @@ final class IgniteTransportExceptionTest extends TestCase
         self::assertSame(IgniteTransportFailure::ReadTruncated, $exception->reason);
         self::assertSame('Ignite read truncated', $exception->getMessage());
     }
+
+    public function testWriteTimedOutIsDistinctFromReadTimedOut(): void
+    {
+        $write = new IgniteTransportException(IgniteTransportFailure::WriteTimedOut);
+        $read = new IgniteTransportException(IgniteTransportFailure::ReadTimedOut);
+
+        self::assertSame('Ignite write timed out', $write->getMessage());
+        self::assertSame('Ignite read timed out', $read->getMessage());
+        self::assertNotSame($write->reason, $read->reason);
+    }
 }

@@ -90,7 +90,7 @@ fwrite(\STDERR, 'Started memcached on '.MEMCACHED_HOST.":{$port}\n");
 
 $phpunit = __DIR__.'/../vendor/bin/phpunit';
 $args = array_slice($argv, 1);
-$testTarget = 'tests/Integration';
+$testTarget = 'tests/Integration/MemcachedIntegrationTest.php';
 if (isset($args[0]) && str_starts_with($args[0], 'tests/')) {
     $testTarget = array_shift($args);
 }
@@ -144,7 +144,7 @@ function phpCommandPrefix(string $testTarget): array
 {
     $command = [\PHP_BINARY];
 
-    if (in_array($testTarget, ['tests/Integration', 'tests/Parity'], true)) {
+    if (str_starts_with($testTarget, 'tests/Integration') || 'tests/Parity' === $testTarget) {
         $command = addOptionalExtension($command, 'igbinary', 'IGBINARY_PECL_EXTENSION');
     }
 

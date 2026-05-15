@@ -491,8 +491,6 @@ final class NativeIgniteClient
 
     private function execute(int $opCode, string $body): string
     {
-        $this->opCounts[$opCode] = ($this->opCounts[$opCode] ?? 0) + 1;
-
         try {
             return $this->executeOnce($opCode, $body);
         } catch (IgniteTransportException $igniteTransportException) {
@@ -512,6 +510,7 @@ final class NativeIgniteClient
 
     private function executeOnce(int $opCode, string $body): string
     {
+        $this->opCounts[$opCode] = ($this->opCounts[$opCode] ?? 0) + 1;
         $this->ensureConnected();
         $requestId = $this->nextRequestId++;
         $message = IgniteWire::packInt16($opCode).IgniteWire::packInt64($requestId).$body;
@@ -663,7 +662,7 @@ final class NativeIgniteClient
 
         $meta = stream_get_meta_data($this->stream);
         if ($meta['timed_out']) {
-            throw new IgniteTransportException(IgniteTransportFailure::ReadTimedOut);
+            throw new IgniteTransportException(IgniteTransportFailure::WriteTimedOut);
         }
 
         if ($meta['eof']) {
