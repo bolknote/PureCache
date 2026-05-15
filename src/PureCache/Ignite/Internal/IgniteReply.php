@@ -19,11 +19,11 @@ final class IgniteReply
     public static function assertFrameLength(int $length): void
     {
         if ($length < 0) {
-            throw new \RuntimeException('Ignite reply: invalid frame length');
+            throw IgniteTransportException::frameLengthInvalid();
         }
 
         if ($length > self::MAX_FRAME_BYTES) {
-            throw new \RuntimeException('Ignite reply: frame length '.$length.' exceeds maximum '.self::MAX_FRAME_BYTES);
+            throw IgniteTransportException::frameLengthExceeded($length, self::MAX_FRAME_BYTES);
         }
     }
 
@@ -63,7 +63,8 @@ final class IgniteReply
     }
 
     /**
-     * @return array{0:string,1:int}
+     * @return array{0:string,1:int} protocol NULL is returned as {@code ''} (not
+     *                               distinguishable from an empty string on the wire)
      */
     public static function readStringObject(string $bytes, int $offset): array
     {
@@ -126,8 +127,12 @@ final class IgniteReply
     public static function readBool(string $bytes, int $offset): bool
     {
         self::requireSpan($bytes, $offset, 1);
+        $byte = IgniteWire::unpackUint8($bytes, $offset);
+        if ($byte > 1) {
+            throw new \RuntimeException('Ignite reply: invalid bool '.$byte);
+        }
 
-        return 1 === IgniteWire::unpackUint8($bytes, $offset);
+        return 1 === $byte;
     }
 
     /**
@@ -137,6 +142,10 @@ final class IgniteReply
     {
         self::requireSpan($bytes, $offset, 4);
         $rowCount = IgniteWire::unpackInt32($bytes, $offset);
+        if ($rowCount < 0) {
+            throw new \RuntimeException('Ignite reply: negative scan row count');
+        }
+
         $offset += 4;
         $keys = [];
         for ($i = 0; $i < $rowCount; ++$i) {

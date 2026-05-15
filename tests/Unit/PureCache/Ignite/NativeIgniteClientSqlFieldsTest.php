@@ -16,7 +16,8 @@ final class NativeIgniteClientSqlFieldsTest extends TestCase
         $response = IgniteWire::packInt64(42)
             .IgniteWire::packInt32(1)
             .IgniteWire::packInt32(1)
-            .IgniteCacheCodec::encodeStringObject('2.16.0');
+            .IgniteCacheCodec::encodeStringObject('2.16.0')
+            .IgniteWire::packInt8(0);
 
         $method = new \ReflectionMethod(NativeIgniteClient::class, 'parseSqlFieldsVersion');
 
@@ -29,7 +30,8 @@ final class NativeIgniteClientSqlFieldsTest extends TestCase
         $response = IgniteWire::packInt64(0)
             .IgniteWire::packInt32(1)
             .IgniteWire::packInt32(1)
-            .IgniteCacheCodec::encodeNullObject();
+            .IgniteCacheCodec::encodeNullObject()
+            .IgniteWire::packInt8(0);
 
         $method = new \ReflectionMethod(NativeIgniteClient::class, 'parseSqlFieldsVersion');
 
@@ -41,13 +43,33 @@ final class NativeIgniteClientSqlFieldsTest extends TestCase
         $method->invoke($client, $response);
     }
 
+    public function testParseSqlFieldsVersionRejectsTrailingBytesAfterHasMore(): void
+    {
+        $response = IgniteWire::packInt64(0)
+            .IgniteWire::packInt32(1)
+            .IgniteWire::packInt32(1)
+            .IgniteCacheCodec::encodeStringObject('2.16.0')
+            .IgniteWire::packInt8(0)
+            ."\x00";
+
+        $method = new \ReflectionMethod(NativeIgniteClient::class, 'parseSqlFieldsVersion');
+
+        $client = new NativeIgniteClient('127.0.0.1', 10800);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('trailing bytes');
+
+        $method->invoke($client, $response);
+    }
+
     public function testParseSqlFieldsVersionIgnoresExtraRows(): void
     {
         $response = IgniteWire::packInt64(0)
             .IgniteWire::packInt32(1)
             .IgniteWire::packInt32(2)
             .IgniteCacheCodec::encodeStringObject('2.16.0')
-            .IgniteCacheCodec::encodeStringObject('9.9.9-should-not-win');
+            .IgniteCacheCodec::encodeStringObject('9.9.9-should-not-win')
+            .IgniteWire::packInt8(0);
 
         $method = new \ReflectionMethod(NativeIgniteClient::class, 'parseSqlFieldsVersion');
 

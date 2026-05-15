@@ -6,6 +6,7 @@ namespace PureCache\Ignite;
 
 use PureCache\AbstractCacheClient;
 use PureCache\Ignite\Internal\IgniteCacheCodec;
+use PureCache\Ignite\Internal\IgniteCommandResultMapper;
 use PureCache\Internal\CacheEntry;
 use PureCache\Internal\Expiration;
 use PureCache\Internal\PersistentStateRegistry;
@@ -163,7 +164,7 @@ final class IgniteClient extends AbstractCacheClient
 
             return $found;
         } catch (\Throwable $throwable) {
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+            $this->applyIgniteFailure($throwable);
 
             return false;
         }
@@ -185,7 +186,7 @@ final class IgniteClient extends AbstractCacheClient
 
             return $results;
         } catch (\Throwable $throwable) {
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+            $this->applyIgniteFailure($throwable);
 
             return false;
         }
@@ -203,7 +204,7 @@ final class IgniteClient extends AbstractCacheClient
                 $valueCb($this, $this->delayedEntry($orig, $entry, $withCas));
             }
         } catch (\Throwable $throwable) {
-            $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+            $this->applyIgniteFailure($throwable);
 
             return false;
         }
@@ -296,7 +297,7 @@ final class IgniteClient extends AbstractCacheClient
                 };
             } catch (\Throwable $throwable) {
                 $this->recordServerFailure($idx, $throwable);
-                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+                $this->applyIgniteFailure($throwable);
 
                 return false;
             }
@@ -389,7 +390,7 @@ final class IgniteClient extends AbstractCacheClient
                 }
             } catch (\Throwable $throwable) {
                 $this->recordServerFailure($idx, $throwable);
-                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+                $this->applyIgniteFailure($throwable);
 
                 return false;
             }
@@ -770,7 +771,7 @@ final class IgniteClient extends AbstractCacheClient
                 return false;
             } catch (\Throwable $throwable) {
                 $this->recordServerFailure($idx, $throwable);
-                $this->setResult(self::RES_FAILURE, $throwable->getMessage());
+                $this->applyIgniteFailure($throwable);
 
                 return false;
             }
@@ -940,5 +941,22 @@ final class IgniteClient extends AbstractCacheClient
             'sizes' => IgniteStatsAsMemcached::sizes(),
             default => IgniteStatsAsMemcached::general($snapshot, $count),
         };
+    }
+
+    /**
+     * Maps Ignite command / transport faults to PECL result codes.
+     */
+    private function applyIgniteFailure(\Throwable $throwable): void
+    {
+        if ($throwable instanceof IgniteCommandException) {
+            $this->setResult(
+                IgniteCommandResultMapper::toResultCode($throwable->statusCode),
+                $throwable->getMessage(),
+            );
+
+            return;
+        }
+
+        $this->setResult(self::RES_FAILURE, $throwable->getMessage());
     }
 }

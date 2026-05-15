@@ -24,6 +24,36 @@ final class IgniteProtocol
 
     public const int RESPONSE_OK = 0;
 
+    /** Mirrors {@code org.apache.ignite...ClientStatus}. */
+    public const int STATUS_FAILED = 1;
+
+    public const int STATUS_INVALID_NODE_STATE = 10;
+
+    public const int STATUS_NODE_IN_RECOVERY_MODE = 11;
+
+    public const int STATUS_CACHE_DOES_NOT_EXIST = 1000;
+
+    public const int STATUS_RESOURCE_DOES_NOT_EXIST = 1011;
+
+    public const int STATUS_SECURITY_VIOLATION = 1012;
+
+    public const int STATUS_AUTH_FAILED = 2000;
+
+    /**
+     * Opcodes safe to resend once after a transport reconnect (read-only cache
+     * ops, idempotent resource close, and the read-only VERSION SQL probe).
+     *
+     * @var list<int>
+     */
+    private const array TRANSPORT_RETRY_OPCODES = [
+        self::OP_CACHE_GET,
+        self::OP_CACHE_GET_ALL,
+        self::OP_CACHE_GET_SIZE,
+        self::OP_CACHE_CONTAINS_KEY,
+        self::OP_QUERY_SQL_FIELDS,
+        self::OP_RESOURCE_CLOSE,
+    ];
+
     public const int PROTOCOL_MAJOR = 1;
 
     public const int PROTOCOL_MINOR = 2;
@@ -78,4 +108,9 @@ final class IgniteProtocol
     public const int TYPE_BYTE_ARRAY = 12;
 
     public const int TYPE_NULL = 101;
+
+    public static function allowsTransportRetry(int $opCode): bool
+    {
+        return \in_array($opCode, self::TRANSPORT_RETRY_OPCODES, true);
+    }
 }

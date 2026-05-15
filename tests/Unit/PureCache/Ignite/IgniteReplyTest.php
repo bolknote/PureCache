@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use PureCache\Ignite\Internal\IgniteCacheCodec;
 use PureCache\Ignite\Internal\IgniteReply;
+use PureCache\Ignite\Internal\IgniteTransportException;
 use PureCache\Ignite\Internal\IgniteWire;
 
 final class IgniteReplyTest extends TestCase
@@ -45,7 +46,7 @@ final class IgniteReplyTest extends TestCase
 
     public function testAssertFrameLengthRejectsOversizedFrames(): void
     {
-        $this->expectException(\RuntimeException::class);
+        $this->expectException(IgniteTransportException::class);
         $this->expectExceptionMessage('exceeds maximum');
 
         IgniteReply::assertFrameLength(IgniteReply::MAX_FRAME_BYTES + 1);
@@ -54,7 +55,7 @@ final class IgniteReplyTest extends TestCase
     #[DataProvider('invalidFrameLengthsProvider')]
     public function testAssertFrameLengthRejectsInvalidLengths(int $length): void
     {
-        $this->expectException(\RuntimeException::class);
+        $this->expectException(IgniteTransportException::class);
 
         IgniteReply::assertFrameLength($length);
     }
@@ -65,6 +66,24 @@ final class IgniteReplyTest extends TestCase
     public static function invalidFrameLengthsProvider(): iterable
     {
         yield 'negative' => [-1];
+    }
+
+    public function testReadBoolRejectsNonZeroOneValues(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('invalid bool');
+
+        IgniteReply::readBool("\x02", 0);
+    }
+
+    public function testReadScanPageRejectsNegativeRowCount(): void
+    {
+        $bytes = IgniteWire::packInt32(-1);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('negative scan row count');
+
+        IgniteReply::readScanPage($bytes, 0);
     }
 
     public function testReadScanPageWalksKeysAndValues(): void

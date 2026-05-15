@@ -9,6 +9,8 @@ use PureCache\Ignite\Internal\IgniteHashCode;
 use PureCache\Ignite\Internal\IgniteProtocol;
 use PureCache\Ignite\Internal\IgniteReply;
 use PureCache\Ignite\Internal\IgniteStatsSnapshot;
+use PureCache\Ignite\Internal\IgniteTransportException;
+use PureCache\Ignite\Internal\IgniteTransportFailure;
 use PureCache\Ignite\Internal\IgniteWire;
 
 /**
@@ -23,8 +25,8 @@ use PureCache\Ignite\Internal\IgniteWire;
  * Each instance multiplexes requests onto a single socket and pairs them with
  * server replies by the auto-incrementing {@code requestId} that the protocol
  * echoes in the header. A single transport-level retry (reconnect + resend) is
- * attempted when the TCP session fails mid-flight before a complete reply frame
- * is parsed.
+ * attempted for read-only / idempotent opcodes when the TCP session fails
+ * mid-flight ({@see IgniteProtocol::allowsTransportRetry()}).
  */
 final class NativeIgniteClient
 {
@@ -74,9 +76,9 @@ final class NativeIgniteClient
             'socket' => ['tcp_nodelay' => true],
         ]);
 
-        $stream = stream_socket_client($remote, $errno, $errstr, $timeout, \STREAM_CLIENT_CONNECT, $context);
+        $stream = @stream_socket_client($remote, $errno, $errstr, $timeout, \STREAM_CLIENT_CONNECT, $context);
         if (!\is_resource($stream)) {
-            throw new \RuntimeException('Ignite connect failed: '.$errstr.' ('.$errno.')');
+            throw IgniteTransportException::connectFailed($errstr ?? '', $errno ?? 0);
         }
 
         stream_set_blocking($stream, true);
@@ -196,8 +198,23 @@ final class NativeIgniteClient
 
         $response = $this->execute(IgniteProtocol::OP_CACHE_GET_ALL, $body);
 
+        return $this->parseGetAllResponse($response, $keys);
+    }
+
+    /**
+     * @param list<string> $requestedKeys
+     *
+     * @return array<string, string>
+     */
+    private function parseGetAllResponse(string $response, array $requestedKeys): array
+    {
         IgniteReply::requireSpan($response, 0, 4);
         $count = IgniteWire::unpackInt32($response, 0);
+        $keyCount = \count($requestedKeys);
+        if ($count < 0 || $count > $keyCount) {
+            throw new \RuntimeException('Ignite reply: GET_ALL entry count '.$count.' exceeds requested '.$keyCount);
+        }
+
         $offset = 4;
         $out = [];
         for ($i = 0; $i < $count; ++$i) {
@@ -206,6 +223,10 @@ final class NativeIgniteClient
             if (null !== $value) {
                 $out[$key] = $value;
             }
+        }
+
+        if ($offset !== \strlen($response)) {
+            throw new \RuntimeException('Ignite reply: GET_ALL response has trailing bytes');
         }
 
         return $out;
@@ -321,6 +342,7 @@ final class NativeIgniteClient
         IgniteReply::requireSpan($response, 0, 1);
         $status = IgniteWire::unpackUint8($response, 0);
         if (IgniteProtocol::HANDSHAKE_OK !== $status) {
+            IgniteReply::requireSpan($response, 0, 7);
             $major = IgniteWire::unpackInt16($response, 1);
             $minor = IgniteWire::unpackInt16($response, 3);
             $patch = IgniteWire::unpackInt16($response, 5);
@@ -385,7 +407,7 @@ final class NativeIgniteClient
      */
     private function parseSqlFieldsVersion(string $response): string
     {
-        if (\strlen($response) < 16) {
+        if (\strlen($response) < 17) {
             throw new \RuntimeException('Ignite SQL fields reply too short');
         }
 
@@ -399,21 +421,39 @@ final class NativeIgniteClient
             throw new \RuntimeException('Ignite SQL fields query returned no VERSION row');
         }
 
-        [$value] = IgniteReply::readDataObject($response, $offset);
-        if (null === $value || '' === (string) $value) {
+        $version = null;
+        for ($row = 0; $row < $rowCount; ++$row) {
+            for ($col = 0; $col < $columnCount; ++$col) {
+                [$value, $offset] = IgniteReply::readDataObject($response, $offset);
+                if (null === $version && null !== $value && '' !== (string) $value) {
+                    $version = (string) $value;
+                }
+            }
+        }
+
+        IgniteReply::readBool($response, $offset);
+        ++$offset;
+
+        if ($offset !== \strlen($response)) {
+            throw new \RuntimeException('Ignite SQL fields reply has trailing bytes');
+        }
+
+        if (null === $version) {
             throw new \RuntimeException('Ignite SQL fields query returned empty VERSION');
         }
 
-        return (string) $value;
+        return $version;
     }
 
     private function execute(int $opCode, string $body): string
     {
+        $this->opCounts[$opCode] = ($this->opCounts[$opCode] ?? 0) + 1;
+
         try {
             return $this->executeOnce($opCode, $body);
-        } catch (\RuntimeException $runtimeException) {
-            if (!$this->isRetriableTransportFailure($runtimeException)) {
-                throw $runtimeException;
+        } catch (IgniteTransportException $igniteTransportException) {
+            if (!IgniteProtocol::allowsTransportRetry($opCode)) {
+                throw $igniteTransportException;
             }
 
             $this->reconnectTransport();
@@ -425,24 +465,11 @@ final class NativeIgniteClient
     private function executeOnce(int $opCode, string $body): string
     {
         $this->ensureConnected();
-        $this->opCounts[$opCode] = ($this->opCounts[$opCode] ?? 0) + 1;
         $requestId = $this->nextRequestId++;
         $message = IgniteWire::packInt16($opCode).IgniteWire::packInt64($requestId).$body;
         $this->writeBytes(IgniteWire::packInt32(\strlen($message)).$message);
 
         return $this->readResponse($requestId);
-    }
-
-    private function isRetriableTransportFailure(\RuntimeException $exception): bool
-    {
-        $message = $exception->getMessage();
-
-        return \in_array($message, [
-            'Ignite read truncated',
-            'Ignite read timed out',
-            'Ignite write failed',
-            'Ignite not connected',
-        ], true) || str_starts_with($message, 'Ignite reply: frame length ');
     }
 
     private function reconnectTransport(): void
@@ -455,16 +482,17 @@ final class NativeIgniteClient
     {
         $frame = $this->readFramedResponse();
         if (\strlen($frame) < 12) {
-            throw new \RuntimeException('Ignite reply too short');
+            throw new IgniteTransportException(IgniteTransportFailure::ReplyTooShort);
         }
 
         $responseId = IgniteWire::unpackInt64($frame, 0);
         if ($responseId !== $expectedRequestId) {
-            throw new \RuntimeException('Ignite reply request id mismatch');
+            throw new IgniteTransportException(IgniteTransportFailure::RequestIdMismatch);
         }
 
         $status = IgniteWire::unpackInt32($frame, 8);
         if (IgniteProtocol::RESPONSE_OK !== $status) {
+            IgniteReply::requireSpan($frame, 12, 1);
             [$message] = IgniteReply::readStringObject($frame, 12);
 
             throw new IgniteCommandException($message, $status);
@@ -511,7 +539,7 @@ final class NativeIgniteClient
     private function writeBytes(string $data): void
     {
         if (!\is_resource($this->stream)) {
-            throw new \RuntimeException('Ignite not connected');
+            throw new IgniteTransportException(IgniteTransportFailure::NotConnected);
         }
 
         $total = \strlen($data);
@@ -520,7 +548,7 @@ final class NativeIgniteClient
             $chunk = fwrite($this->stream, substr($data, $written));
             if (false === $chunk || 0 === $chunk) {
                 $this->checkTimeout();
-                throw new \RuntimeException('Ignite write failed');
+                throw new IgniteTransportException(IgniteTransportFailure::WriteFailed);
             }
 
             $written += $chunk;
@@ -536,7 +564,7 @@ final class NativeIgniteClient
         }
 
         if (!\is_resource($this->stream)) {
-            throw new \RuntimeException('Ignite not connected');
+            throw new IgniteTransportException(IgniteTransportFailure::NotConnected);
         }
 
         $buf = '';
@@ -544,7 +572,7 @@ final class NativeIgniteClient
             $chunk = fread($this->stream, $remaining);
             if (false === $chunk || '' === $chunk) {
                 $this->checkTimeout();
-                throw new \RuntimeException('Ignite read truncated');
+                throw new IgniteTransportException(IgniteTransportFailure::ReadTruncated);
             }
 
             $buf .= $chunk;
@@ -563,7 +591,7 @@ final class NativeIgniteClient
 
         $meta = stream_get_meta_data($this->stream);
         if ($meta['timed_out']) {
-            throw new \RuntimeException('Ignite read timed out');
+            throw new IgniteTransportException(IgniteTransportFailure::ReadTimedOut);
         }
     }
 }
