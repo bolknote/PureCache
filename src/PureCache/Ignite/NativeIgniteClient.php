@@ -113,15 +113,10 @@ final class NativeIgniteClient
         $this->disconnect();
     }
 
-    public function getServerVersion(): string
-    {
-        return $this->serverVersion;
-    }
-
     /**
      * Resolves the Ignite cluster product version via {@code SYS.NODES} and caches
-     * it for {@see getServerVersion()} / stats. Requires the named cache to exist
-     * on the node (call after {@code cacheGetOrCreate}).
+     * it for {@see getStatsSnapshot()}. Requires the named cache to exist on the
+     * node (call after {@code cacheGetOrCreate}).
      */
     public function resolveProductVersion(int $cacheId): string
     {
