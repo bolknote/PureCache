@@ -43,9 +43,27 @@ final class IgniteCommandResultMapperTest extends TestCase
      */
     public static function transportMappingsProvider(): iterable
     {
-        yield 'read timeout' => [IgniteTransportFailure::ReadTimedOut, MemcachedConstants::RES_TIMEOUT];
+        yield 'not connected' => [IgniteTransportFailure::NotConnected, MemcachedConstants::RES_CONNECTION_FAILURE];
         yield 'connect failed' => [IgniteTransportFailure::ConnectFailed, MemcachedConstants::RES_CONNECTION_FAILURE];
+        yield 'handshake failed' => [IgniteTransportFailure::HandshakeFailed, MemcachedConstants::RES_CONNECTION_FAILURE];
         yield 'connection closed' => [IgniteTransportFailure::ConnectionClosed, MemcachedConstants::RES_CONNECTION_FAILURE];
+        yield 'read timeout' => [IgniteTransportFailure::ReadTimedOut, MemcachedConstants::RES_TIMEOUT];
+        yield 'write timeout' => [IgniteTransportFailure::WriteTimedOut, MemcachedConstants::RES_TIMEOUT];
+        yield 'read truncated' => [IgniteTransportFailure::ReadTruncated, MemcachedConstants::RES_READ_FAILURE];
+        yield 'write failed' => [IgniteTransportFailure::WriteFailed, MemcachedConstants::RES_READ_FAILURE];
+        yield 'frame length invalid' => [IgniteTransportFailure::FrameLengthInvalid, MemcachedConstants::RES_FAILURE];
+        yield 'frame length exceeded' => [IgniteTransportFailure::FrameLengthExceeded, MemcachedConstants::RES_FAILURE];
+        yield 'reply too short' => [IgniteTransportFailure::ReplyTooShort, MemcachedConstants::RES_FAILURE];
+        yield 'request id mismatch' => [IgniteTransportFailure::RequestIdMismatch, MemcachedConstants::RES_FAILURE];
         yield 'retry exhausted' => [IgniteTransportFailure::RetryExhausted, MemcachedConstants::RES_FAILURE];
+    }
+
+    public function testMapsEveryTransportFailureCase(): void
+    {
+        self::assertCount(
+            \count(IgniteTransportFailure::cases()),
+            iterator_to_array(self::transportMappingsProvider(), false),
+            'transportMappingsProvider must cover every IgniteTransportFailure case',
+        );
     }
 }

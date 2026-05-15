@@ -41,15 +41,8 @@ stream_set_blocking($pipes[1], false);
 stream_set_blocking($pipes[2], false);
 
 while (true) {
-    $stdout = stream_get_contents($pipes[1]);
-    $stderr = stream_get_contents($pipes[2]);
-    if (false !== $stdout && '' !== $stdout) {
-        fwrite(\STDOUT, $stdout);
-    }
-
-    if (false !== $stderr && '' !== $stderr) {
-        fwrite(\STDERR, $stderr);
-    }
+    forwardProcPipe($pipes[1], \STDOUT);
+    forwardProcPipe($pipes[2], \STDERR);
 
     $status = proc_get_status($process);
     if (!$status['running']) {
@@ -59,6 +52,23 @@ while (true) {
     usleep(50_000);
 }
 
+forwardProcPipe($pipes[1], \STDOUT);
+forwardProcPipe($pipes[2], \STDERR);
+fclose($pipes[1]);
+fclose($pipes[2]);
+
 $code = proc_close($process);
 
 exit(0 === $code ? 0 : ($code > 0 ? $code : 1));
+
+/**
+ * @param resource $pipe
+ * @param resource $out
+ */
+function forwardProcPipe($pipe, $out): void
+{
+    $chunk = stream_get_contents($pipe);
+    if (false !== $chunk && '' !== $chunk) {
+        fwrite($out, $chunk);
+    }
+}

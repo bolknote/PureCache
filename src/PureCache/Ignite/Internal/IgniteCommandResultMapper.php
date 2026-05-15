@@ -33,7 +33,8 @@ final class IgniteCommandResultMapper
     public static function transportToResultCode(IgniteTransportFailure $reason): int
     {
         return match ($reason) {
-            IgniteTransportFailure::ReadTimedOut => MemcachedConstants::RES_TIMEOUT,
+            IgniteTransportFailure::ReadTimedOut,
+            IgniteTransportFailure::WriteTimedOut => MemcachedConstants::RES_TIMEOUT,
             IgniteTransportFailure::ConnectFailed,
             IgniteTransportFailure::HandshakeFailed,
             IgniteTransportFailure::ConnectionClosed,

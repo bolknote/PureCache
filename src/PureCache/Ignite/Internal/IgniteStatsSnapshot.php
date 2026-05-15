@@ -16,7 +16,7 @@ namespace PureCache\Ignite\Internal;
 final readonly class IgniteStatsSnapshot
 {
     /**
-     * @param array<int, int> $opCounts opcode → wire attempts ({@see \PureCache\Ignite\NativeIgniteClient}), including transport retries
+     * @param array<int, int> $opCounts opcode → wire attempts ({@see \PureCache\Ignite\NativeIgniteClient}), including transport retries across reconnects
      */
     public function __construct(
         public string $serverVersion,

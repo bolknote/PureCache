@@ -51,7 +51,7 @@ final class NativeIgniteClient
 
     private int $bytesWritten = 0;
 
-    /** @var array<int, int> opcode → call count since the last connect */
+    /** @var array<int, int> opcode → wire attempts for this client instance (survives transport reconnect) */
     private array $opCounts = [];
 
     public function __construct(
@@ -100,12 +100,7 @@ final class NativeIgniteClient
 
     public function disconnect(): void
     {
-        $stream = $this->stream;
-        if (\is_resource($stream)) {
-            fclose($stream);
-        }
-
-        $this->stream = null;
+        $this->closeStream();
         $this->nextRequestId = 1;
         $this->connectedAt = 0;
         $this->serverVersion = '';
@@ -521,8 +516,18 @@ final class NativeIgniteClient
 
     private function reconnectTransport(): void
     {
-        $this->disconnect();
+        $this->closeStream();
         $this->connect();
+    }
+
+    private function closeStream(): void
+    {
+        $stream = $this->stream;
+        if (\is_resource($stream)) {
+            fclose($stream);
+        }
+
+        $this->stream = null;
     }
 
     private function readResponse(int $expectedRequestId): string

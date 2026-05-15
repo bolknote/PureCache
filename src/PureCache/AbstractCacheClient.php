@@ -737,6 +737,8 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
 
         $current = $this->pullDelayedResultsBatch();
         if (null === $current) {
+            $this->abortDelayedFetch();
+
             return false;
         }
 
@@ -745,6 +747,8 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             $this->core->delayedCursor = 0;
             $current = $this->pullDelayedResultsBatch();
             if (null === $current) {
+                $this->abortDelayedFetch();
+
                 return false;
             }
         }
@@ -775,6 +779,8 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
 
         $batch = $this->pullDelayedResultsBatch();
         if (null === $batch) {
+            $this->abortDelayedFetch();
+
             return false;
         }
 
@@ -784,6 +790,8 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             $this->core->delayedCursor = 0;
             $next = $this->pullDelayedResultsBatch();
             if (null === $next) {
+                $this->abortDelayedFetch();
+
                 return false;
             }
 
@@ -1888,6 +1896,13 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         }
 
         return $this->core->delayedResults;
+    }
+
+    private function abortDelayedFetch(): void
+    {
+        $this->core->delayedResults = null;
+        $this->core->delayedQueue = [];
+        $this->core->delayedCursor = 0;
     }
 
     private function primeDelayedResults(): bool
