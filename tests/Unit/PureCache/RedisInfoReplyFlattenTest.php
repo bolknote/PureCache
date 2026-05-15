@@ -56,7 +56,7 @@ final class RedisInfoReplyFlattenTest extends TestCase
 
         $flat = RedisInfoReplyFlatten::toStringMap($reply);
 
-        self::assertSame(['ok' => '1', 'scalar' => '1'], $flat);
+        self::assertSame(['ok' => '1'], $flat, 'booleans are omitted so stats parsers do not see "1" for maxmemory');
     }
 
     public function testLaterSectionOverwritesDuplicateKey(): void

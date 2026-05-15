@@ -636,20 +636,24 @@ final class RedisClient extends AbstractCacheClient
             return false;
         }
 
-        $result = $this->collectFromServers(function (int $i) use ($type): array {
+        $keyPattern = self::ITEM_KEY_PREFIX.'*';
+
+        $result = $this->collectFromServers(function (int $i) use ($type, $keyPattern): array {
             $r = $this->redisForServerIndex($i);
             if (null === $type || '' === $type) {
-                return RedisStatsAsMemcached::general($r);
+                return RedisStatsAsMemcached::general($r, $keyPattern);
             }
 
             if ('items' === $type) {
-                return RedisStatsAsMemcached::items($r, self::ITEM_KEY_PREFIX.'*');
+                $scan = RedisStatsAsMemcached::scanKeys($r, $keyPattern);
+
+                return RedisStatsAsMemcached::items($r, $keyPattern, $scan);
             }
 
             if ('slabs' === $type) {
-                $scan = RedisStatsAsMemcached::scanCountAndFirstKey($r, self::ITEM_KEY_PREFIX.'*', 100_000);
+                $scan = RedisStatsAsMemcached::scanKeys($r, $keyPattern);
 
-                return RedisStatsAsMemcached::slabs($r, $scan['count']);
+                return RedisStatsAsMemcached::slabs($r, $scan);
             }
 
             if ('sizes' === $type) {

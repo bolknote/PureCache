@@ -35,11 +35,19 @@ final class RedisInfoReplyFlatten
                         continue;
                     }
 
+                    if (\is_bool($sv)) {
+                        continue;
+                    }
+
                     if (\is_scalar($sv) || null === $sv) {
                         $out[$sk] = (string) $sv;
                     }
                 }
 
+                continue;
+            }
+
+            if (\is_bool($v)) {
                 continue;
             }
 

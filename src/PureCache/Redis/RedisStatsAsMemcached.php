@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PureCache\Redis;
 
+use PureCache\Internal\MemcachedStatsSchema;
 use PureCache\Redis\Internal\RedisInfoReplyFlatten;
 
 /**
@@ -12,63 +13,35 @@ use PureCache\Redis\Internal\RedisInfoReplyFlatten;
  *
  * Values are best-effort: Redis has different accounting than memcached; keys aim to mirror
  * memcached 1.6 general stats plus {@code stats items|slabs|sizes} shapes.
+ *
+ * Prefix key counts use {@see scanKeys()} with a shared iteration cap; when the cap is hit,
+ * {@code complete} is false and {@code mem_requested} uses a conservative per-key fallback.
  */
 final class RedisStatsAsMemcached
 {
-    /**
-     * Default max memory if Redis has no limit (8 GB).
-     */
-    private const int DEFAULT_MAX_MEMORY = 8_589_934_592;
-
     private function __construct()
     {
     }
 
-    /** @var list<string> */
-    private const array GENERAL_STAT_NAMES = [
-        'pid', 'uptime', 'time', 'version', 'libevent', 'pointer_size', 'rusage_user', 'rusage_system',
-        'max_connections', 'curr_connections', 'total_connections', 'rejected_connections', 'connection_structures',
-        'response_obj_oom', 'response_obj_count', 'response_obj_bytes', 'read_buf_count', 'read_buf_bytes',
-        'read_buf_bytes_free', 'read_buf_oom', 'reserved_fds', 'cmd_get', 'cmd_set', 'cmd_flush', 'cmd_touch',
-        'cmd_meta', 'get_hits', 'get_misses', 'get_expired', 'get_flushed', 'delete_misses', 'delete_hits',
-        'incr_misses', 'incr_hits', 'decr_misses', 'decr_hits', 'cas_misses', 'cas_hits', 'cas_badval',
-        'touch_hits', 'touch_misses', 'store_too_large', 'store_no_memory', 'auth_cmds', 'auth_errors',
-        'bytes_read', 'bytes_written', 'limit_maxbytes', 'accepting_conns', 'listen_disabled_num',
-        'time_in_listen_disabled_us', 'threads', 'conn_yields', 'hash_power_level', 'hash_bytes',
-        'hash_is_expanding', 'slab_reassign_rescues', 'slab_reassign_chunk_rescues', 'slab_reassign_inline_reclaim',
-        'slab_reassign_busy_items', 'slab_reassign_busy_deletes', 'slab_reassign_busy_nomem',
-        'slab_reassign_last_busy_status', 'slab_reassign_running', 'slabs_moved', 'lru_crawler_running',
-        'lru_crawler_starts', 'lru_maintainer_juggles', 'malloc_fails', 'log_worker_dropped', 'log_worker_written',
-        'log_watcher_skipped', 'log_watcher_sent', 'log_watchers', 'unexpected_napi_ids', 'round_robin_fallback',
-        'bytes', 'curr_items', 'total_items', 'slab_global_page_pool', 'expired_unfetched', 'evicted_unfetched',
-        'evicted_active', 'evictions', 'reclaimed', 'crawler_reclaimed', 'crawler_items_checked', 'lrutail_reflocked',
-        'moves_to_cold', 'moves_to_warm', 'moves_within_lru', 'direct_reclaims', 'lru_bumps_dropped',
-    ];
-
-    /** @var list<string> */
-    private const array ITEMS_SUFFIXES = [
-        'number', 'number_hot', 'number_warm', 'number_cold', 'number_temp', 'age_hot', 'age_warm', 'age',
-        'mem_requested', 'evicted', 'evicted_nonzero', 'evicted_time', 'outofmemory', 'tailrepairs', 'reclaimed',
-        'expired_unfetched', 'evicted_unfetched', 'evicted_active', 'crawler_reclaimed', 'crawler_items_checked',
-        'lrutail_reflocked', 'moves_to_cold', 'moves_to_warm', 'moves_within_lru', 'direct_reclaims',
-        'hits_to_hot', 'hits_to_warm', 'hits_to_cold', 'hits_to_temp',
-    ];
-
-    /** @var list<string> */
-    private const array SLAB1_SUFFIXES = [
-        'chunk_size', 'chunks_per_page', 'total_pages', 'total_chunks', 'used_chunks', 'free_chunks',
-        'free_chunks_end', 'get_hits', 'cmd_set', 'delete_hits', 'incr_hits', 'decr_hits', 'cas_hits', 'cas_badval',
-        'touch_hits',
-    ];
+    /**
+     * @return array{count: int, firstKey: ?string, complete: bool}
+     */
+    public static function scanKeys(RedisStatsBackend $redis, string $pattern): array
+    {
+        return self::scanCountAndFirstKey($redis, $pattern, MemcachedStatsSchema::SCAN_MAX_ITERATIONS);
+    }
 
     /**
+     * @param array{count: int, firstKey: ?string, complete: bool}|null $keyScan when null, resolved from {@code $keyPattern} via {@see resolveKeyScan()}
+     *
      * @return array<string, int|float|string>
      */
-    public static function general(RedisStatsBackend $redis): array
+    public static function general(RedisStatsBackend $redis, string $keyPattern = '*', ?array $keyScan = null): array
     {
         $info = self::getRedisInfo($redis);
+        $scan = self::resolveKeyScan($redis, $keyPattern, $keyScan);
 
-        $out = array_fill_keys(self::GENERAL_STAT_NAMES, 0);
+        $out = array_fill_keys(MemcachedStatsSchema::GENERAL_STAT_NAMES, 0);
 
         $out['version'] = $info['redis_version'] ?? 'unknown';
         $out['libevent'] = 'redis';
@@ -109,14 +82,15 @@ final class RedisStatsAsMemcached
         $out['bytes'] = self::intFrom($info['used_memory'] ?? null);
 
         $maxmem = self::intFrom($info['maxmemory'] ?? null);
-        $out['limit_maxbytes'] = $maxmem > 0 ? $maxmem : self::DEFAULT_MAX_MEMORY;
+        $out['limit_maxbytes'] = $maxmem > 0 ? $maxmem : MemcachedStatsSchema::DEFAULT_MAX_MEMORY;
 
         $out['accepting_conns'] = 1;
         $out['threads'] = max(1, self::intFrom($info['io_threads_active'] ?? null, 1));
         $out['hash_power_level'] = 16;
 
-        $out['curr_items'] = $redis->dbsize();
-        $out['total_items'] = $out['curr_items'];
+        $itemCount = $scan['count'];
+        $out['curr_items'] = $itemCount;
+        $out['total_items'] = $itemCount;
 
         $out['evictions'] = self::intFrom($info['evicted_keys'] ?? null);
         $out['reclaimed'] = self::intFrom($info['expired_keys'] ?? null);
@@ -125,24 +99,21 @@ final class RedisStatsAsMemcached
     }
 
     /**
+     * @param array{count: int, firstKey: ?string, complete: bool}|null $keyScan when null, resolved from {@code $keyPattern}
+     *
      * @return array<string, int|float|string>
      */
-    public static function items(RedisStatsBackend $redis, string $keyPattern): array
+    public static function items(RedisStatsBackend $redis, string $keyPattern, ?array $keyScan = null): array
     {
-        if ('*' === $keyPattern || '' === $keyPattern) {
-            $count = $redis->dbsize();
-            $firstKey = null;
-        } else {
-            $scan = self::scanCountAndFirstKey($redis, $keyPattern, 1000);
-            $count = $scan['count'];
-            $firstKey = $scan['firstKey'];
-        }
+        $scan = self::resolveKeyScan($redis, $keyPattern, $keyScan);
+        $count = $scan['count'];
+        $firstKey = $scan['firstKey'];
 
         if (0 === $count) {
             return [];
         }
 
-        $memRequested = self::estimateMemRequestedBytes($redis, $count);
+        $memRequested = self::estimateMemRequestedBytes($redis, $count, $scan['complete']);
         $age = 0;
         if (\is_string($firstKey) && '' !== $firstKey) {
             try {
@@ -156,7 +127,7 @@ final class RedisStatsAsMemcached
         }
 
         $out = array_fill_keys(
-            array_map(static fn (string $s): string => 'items:1:'.$s, self::ITEMS_SUFFIXES),
+            array_map(static fn (string $s): string => 'items:1:'.$s, MemcachedStatsSchema::ITEMS_SUFFIXES),
             0
         );
 
@@ -169,11 +140,16 @@ final class RedisStatsAsMemcached
     }
 
     /**
+     * Synthetic single-slab view for PECL-shaped {@code stats slabs}; not Redis memory classes.
+     *
+     * @param array{count: int, firstKey: ?string, complete: bool} $keyScan from {@see scanKeys()}
+     *
      * @return array<string, int|float|string>
      */
-    public static function slabs(RedisStatsBackend $redis, int $pmKeyCount): array
+    public static function slabs(RedisStatsBackend $redis, array $keyScan): array
     {
         $info = self::getRedisInfo($redis);
+        $pmKeyCount = $keyScan['count'];
 
         $usedMemory = self::intFrom($info['used_memory'] ?? null);
         $out = [];
@@ -184,13 +160,12 @@ final class RedisStatsAsMemcached
             return $out;
         }
 
-        $chunkSize = 1_048_576;
+        $chunkSize = MemcachedStatsSchema::SYNTHETIC_SLAB_CHUNK_SIZE;
         $usedChunks = $pmKeyCount;
-        $freeChunks = max(0, 10_000 - $usedChunks);
-        $totalChunks = max(1, $usedChunks + $freeChunks);
+        $totalChunks = max(1, $usedChunks);
 
         $out += array_fill_keys(
-            array_map(static fn (string $s): string => '1:'.$s, self::SLAB1_SUFFIXES),
+            array_map(static fn (string $s): string => '1:'.$s, MemcachedStatsSchema::SLAB1_SUFFIXES),
             0
         );
 
@@ -199,7 +174,7 @@ final class RedisStatsAsMemcached
         $out['1:total_pages'] = 1;
         $out['1:total_chunks'] = $totalChunks;
         $out['1:used_chunks'] = $usedChunks;
-        $out['1:free_chunks'] = $freeChunks;
+        $out['1:free_chunks'] = 0;
         $out['1:free_chunks_end'] = 0;
 
         $out['1:get_hits'] = self::cmdstatCalls($info, 'hgetall');
@@ -227,7 +202,7 @@ final class RedisStatsAsMemcached
     }
 
     /**
-     * @return array{count: int, firstKey: ?string}
+     * @return array{count: int, firstKey: ?string, complete: bool}
      */
     public static function scanCountAndFirstKey(RedisStatsBackend $redis, string $pattern, int $maxIterations): array
     {
@@ -253,11 +228,29 @@ final class RedisStatsAsMemcached
 
             ++$iter;
             if ($iter >= $maxIterations) {
-                break;
+                return ['count' => $count, 'firstKey' => $firstKey, 'complete' => false];
             }
         } while (0 !== $cursor);
 
-        return ['count' => $count, 'firstKey' => $firstKey];
+        return ['count' => $count, 'firstKey' => $firstKey, 'complete' => true];
+    }
+
+    /**
+     * @param array{count: int, firstKey: ?string, complete: bool}|null $keyScan
+     *
+     * @return array{count: int, firstKey: ?string, complete: bool}
+     */
+    private static function resolveKeyScan(RedisStatsBackend $redis, string $keyPattern, ?array $keyScan): array
+    {
+        if (null !== $keyScan) {
+            return $keyScan;
+        }
+
+        if ('*' === $keyPattern || '' === $keyPattern) {
+            return ['count' => $redis->dbsize(), 'firstKey' => null, 'complete' => true];
+        }
+
+        return self::scanKeys($redis, $keyPattern);
     }
 
     /**
@@ -292,7 +285,7 @@ final class RedisStatsAsMemcached
             return $value;
         }
 
-        if (\is_float($value) || \is_bool($value)) {
+        if (\is_float($value)) {
             return (int) $value;
         }
 
@@ -303,10 +296,14 @@ final class RedisStatsAsMemcached
         return $default;
     }
 
-    private static function estimateMemRequestedBytes(RedisStatsBackend $redis, int $count): int
+    private static function estimateMemRequestedBytes(RedisStatsBackend $redis, int $count, bool $scanComplete): int
     {
         if ($count <= 0) {
             return 0;
+        }
+
+        if (!$scanComplete) {
+            return $count * MemcachedStatsSchema::PER_KEY_MEMORY_FALLBACK_BYTES;
         }
 
         try {
@@ -319,9 +316,9 @@ final class RedisStatsAsMemcached
 
                 return (int) min((float) \PHP_INT_MAX, $avgSize * (float) $count);
             }
-        } catch (\Exception) {
+        } catch (\Throwable) {
         }
 
-        return $count * 256;
+        return $count * MemcachedStatsSchema::PER_KEY_MEMORY_FALLBACK_BYTES;
     }
 }

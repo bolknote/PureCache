@@ -6,6 +6,7 @@ namespace PureCache\Ignite;
 
 use PureCache\Ignite\Internal\IgniteProtocol;
 use PureCache\Ignite\Internal\IgniteStatsSnapshot;
+use PureCache\Internal\MemcachedStatsSchema;
 
 /**
  * Folds {@see NativeIgniteClient} bookkeeping plus a couple of cheap Ignite
@@ -20,16 +21,6 @@ use PureCache\Ignite\Internal\IgniteStatsSnapshot;
  */
 final class IgniteStatsAsMemcached
 {
-    /**
-     * Default budget reported as {@code limit_maxbytes} when the thin client
-     * cannot read Ignite's data-region size (8 GB, matches the Redis fallback).
-     */
-    private const int DEFAULT_MAX_MEMORY = 8_589_934_592;
-
-    private function __construct()
-    {
-    }
-
     /**
      * Default Ignite data page size — used as a stand-in {@code chunk_size}
      * for the synthetic single-slab view.
@@ -70,49 +61,16 @@ final class IgniteStatsAsMemcached
         IgniteProtocol::OP_CACHE_REMOVE_KEYS,
     ];
 
-    /** @var list<string> */
-    private const array GENERAL_STAT_NAMES = [
-        'pid', 'uptime', 'time', 'version', 'libevent', 'pointer_size', 'rusage_user', 'rusage_system',
-        'max_connections', 'curr_connections', 'total_connections', 'rejected_connections', 'connection_structures',
-        'response_obj_oom', 'response_obj_count', 'response_obj_bytes', 'read_buf_count', 'read_buf_bytes',
-        'read_buf_bytes_free', 'read_buf_oom', 'reserved_fds', 'cmd_get', 'cmd_set', 'cmd_flush', 'cmd_touch',
-        'cmd_meta', 'get_hits', 'get_misses', 'get_expired', 'get_flushed', 'delete_misses', 'delete_hits',
-        'incr_misses', 'incr_hits', 'decr_misses', 'decr_hits', 'cas_misses', 'cas_hits', 'cas_badval',
-        'touch_hits', 'touch_misses', 'store_too_large', 'store_no_memory', 'auth_cmds', 'auth_errors',
-        'bytes_read', 'bytes_written', 'limit_maxbytes', 'accepting_conns', 'listen_disabled_num',
-        'time_in_listen_disabled_us', 'threads', 'conn_yields', 'hash_power_level', 'hash_bytes',
-        'hash_is_expanding', 'slab_reassign_rescues', 'slab_reassign_chunk_rescues', 'slab_reassign_inline_reclaim',
-        'slab_reassign_busy_items', 'slab_reassign_busy_deletes', 'slab_reassign_busy_nomem',
-        'slab_reassign_last_busy_status', 'slab_reassign_running', 'slabs_moved', 'lru_crawler_running',
-        'lru_crawler_starts', 'lru_maintainer_juggles', 'malloc_fails', 'log_worker_dropped', 'log_worker_written',
-        'log_watcher_skipped', 'log_watcher_sent', 'log_watchers', 'unexpected_napi_ids', 'round_robin_fallback',
-        'bytes', 'curr_items', 'total_items', 'slab_global_page_pool', 'expired_unfetched', 'evicted_unfetched',
-        'evicted_active', 'evictions', 'reclaimed', 'crawler_reclaimed', 'crawler_items_checked', 'lrutail_reflocked',
-        'moves_to_cold', 'moves_to_warm', 'moves_within_lru', 'direct_reclaims', 'lru_bumps_dropped',
-    ];
-
-    /** @var list<string> */
-    private const array ITEMS_SUFFIXES = [
-        'number', 'number_hot', 'number_warm', 'number_cold', 'number_temp', 'age_hot', 'age_warm', 'age',
-        'mem_requested', 'evicted', 'evicted_nonzero', 'evicted_time', 'outofmemory', 'tailrepairs', 'reclaimed',
-        'expired_unfetched', 'evicted_unfetched', 'evicted_active', 'crawler_reclaimed', 'crawler_items_checked',
-        'lrutail_reflocked', 'moves_to_cold', 'moves_to_warm', 'moves_within_lru', 'direct_reclaims',
-        'hits_to_hot', 'hits_to_warm', 'hits_to_cold', 'hits_to_temp',
-    ];
-
-    /** @var list<string> */
-    private const array SLAB1_SUFFIXES = [
-        'chunk_size', 'chunks_per_page', 'total_pages', 'total_chunks', 'used_chunks', 'free_chunks',
-        'free_chunks_end', 'get_hits', 'cmd_set', 'delete_hits', 'incr_hits', 'decr_hits', 'cas_hits', 'cas_badval',
-        'touch_hits',
-    ];
+    private function __construct()
+    {
+    }
 
     /**
      * @return array<string, int|float|string>
      */
     public static function general(IgniteStatsSnapshot $snapshot, int $currItems): array
     {
-        $out = array_fill_keys(self::GENERAL_STAT_NAMES, 0);
+        $out = array_fill_keys(MemcachedStatsSchema::GENERAL_STAT_NAMES, 0);
 
         $version = '' !== $snapshot->serverVersion ? $snapshot->serverVersion : 'unknown';
         $now = time();
@@ -143,7 +101,7 @@ final class IgniteStatsAsMemcached
         $out['bytes_written'] = $snapshot->bytesWritten;
         $out['bytes'] = 0;
 
-        $out['limit_maxbytes'] = self::DEFAULT_MAX_MEMORY;
+        $out['limit_maxbytes'] = MemcachedStatsSchema::DEFAULT_MAX_MEMORY;
         $out['accepting_conns'] = 1;
         $out['threads'] = 1;
         $out['hash_power_level'] = 16;
@@ -164,7 +122,7 @@ final class IgniteStatsAsMemcached
         }
 
         $out = array_fill_keys(
-            array_map(static fn (string $s): string => 'items:1:'.$s, self::ITEMS_SUFFIXES),
+            array_map(static fn (string $s): string => 'items:1:'.$s, MemcachedStatsSchema::ITEMS_SUFFIXES),
             0
         );
 
@@ -190,7 +148,7 @@ final class IgniteStatsAsMemcached
         }
 
         $out += array_fill_keys(
-            array_map(static fn (string $s): string => '1:'.$s, self::SLAB1_SUFFIXES),
+            array_map(static fn (string $s): string => '1:'.$s, MemcachedStatsSchema::SLAB1_SUFFIXES),
             0
         );
 

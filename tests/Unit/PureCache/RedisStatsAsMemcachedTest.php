@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PureCache\Tests\Unit\PureCache;
 
 use PHPUnit\Framework\TestCase;
+use PureCache\Internal\MemcachedStatsSchema;
 use PureCache\Redis\RedisStatsAsMemcached;
 use PureCache\Redis\RedisStatsBackend;
 
@@ -65,6 +66,19 @@ final class RedisStatsAsMemcachedTest extends TestCase
         self::assertSame(5, $stats['cmd_get']);
     }
 
+    public function testGeneralUsesPrefixScanCountNotWholeDatabaseSize(): void
+    {
+        $redis = $this->createMock(RedisStatsBackend::class);
+        $redis->method('info')->willReturn(['Memory' => ['used_memory' => '0']]);
+        $redis->expects(self::never())->method('dbsize');
+        $redis->method('scan')->willReturn([0, ['pm:v1:a', 'pm:v1:b']]);
+
+        $stats = RedisStatsAsMemcached::general($redis, 'pm:v1:*');
+
+        self::assertSame(2, $stats['curr_items']);
+        self::assertSame(2, $stats['total_items']);
+    }
+
     public function testItemsReturnsEmptyWhenScanFindsNoKeys(): void
     {
         $redis = $this->createMock(RedisStatsBackend::class);
@@ -76,14 +90,14 @@ final class RedisStatsAsMemcachedTest extends TestCase
     public function testItemsUsesIdleTimeAndAvgMemoryEstimate(): void
     {
         $redis = $this->createMock(RedisStatsBackend::class);
-        $redis->method('scan')->willReturn([0, ['pm:v1:item1']]);
+        $scan = ['count' => 1, 'firstKey' => 'pm:v1:item1', 'complete' => true];
         $redis->expects(self::once())->method('object')->with('IDLETIME', 'pm:v1:item1')->willReturn(12);
         $redis->method('info')->willReturn([
             'Memory' => ['used_memory' => '1000'],
         ]);
         $redis->method('dbsize')->willReturn(10);
 
-        $items = RedisStatsAsMemcached::items($redis, 'pm:v1:*');
+        $items = RedisStatsAsMemcached::items($redis, 'pm:v1:*', $scan);
 
         self::assertSame(1, $items['items:1:number']);
         self::assertSame(1, $items['items:1:number_cold']);
@@ -98,7 +112,7 @@ final class RedisStatsAsMemcachedTest extends TestCase
             'Server' => ['used_memory' => '999'],
         ]);
 
-        $slabs = RedisStatsAsMemcached::slabs($redis, 0);
+        $slabs = RedisStatsAsMemcached::slabs($redis, ['count' => 0, 'firstKey' => null, 'complete' => true]);
 
         self::assertSame(0, $slabs['active_slabs']);
         self::assertSame(999, $slabs['total_malloced']);
@@ -116,12 +130,13 @@ final class RedisStatsAsMemcachedTest extends TestCase
             ],
         ]);
 
-        $slabs = RedisStatsAsMemcached::slabs($redis, 2);
+        $slabs = RedisStatsAsMemcached::slabs($redis, ['count' => 2, 'firstKey' => 'pm:v1:x', 'complete' => true]);
 
         self::assertSame(1, $slabs['active_slabs']);
         self::assertSame(2048, $slabs['total_malloced']);
-        self::assertSame(1_048_576, $slabs['1:chunk_size']);
+        self::assertSame(MemcachedStatsSchema::SYNTHETIC_SLAB_CHUNK_SIZE, $slabs['1:chunk_size']);
         self::assertSame(2, $slabs['1:used_chunks']);
+        self::assertSame(0, $slabs['1:free_chunks']);
         self::assertSame(2, $slabs['1:get_hits']);
         self::assertSame(3, $slabs['1:cmd_set']);
     }
@@ -140,13 +155,11 @@ final class RedisStatsAsMemcachedTest extends TestCase
 
         self::assertSame(2, $r['count']);
         self::assertSame('pm:v1:a', $r['firstKey']);
+        self::assertTrue($r['complete']);
     }
 
     public function testScanCountAndFirstKeyTerminatesAtIterationCap(): void
     {
-        // Redis SCAN cursors never reach 0 here — without the iteration cap
-        // the helper would loop forever. The cap exists exactly to protect
-        // observability calls from runaway DBs.
         $redis = $this->createMock(RedisStatsBackend::class);
         $redis->method('scan')->willReturn([1, ['k']]);
 
@@ -154,13 +167,11 @@ final class RedisStatsAsMemcachedTest extends TestCase
 
         self::assertSame(3, $r['count']);
         self::assertSame('k', $r['firstKey']);
+        self::assertFalse($r['complete']);
     }
 
     public function testScanCountAndFirstKeySkipsEmptyKeyNames(): void
     {
-        // Some Redis builds (and Dragonfly) occasionally return empty strings
-        // for keys that were deleted mid-scan; we must not count them, and we
-        // must not pick one as the "first" key for the OBJECT IDLETIME probe.
         $redis = $this->createMock(RedisStatsBackend::class);
         $redis->method('scan')->willReturn([0, ['', 'real']]);
 
@@ -168,6 +179,7 @@ final class RedisStatsAsMemcachedTest extends TestCase
 
         self::assertSame(1, $r['count']);
         self::assertSame('real', $r['firstKey']);
+        self::assertTrue($r['complete']);
     }
 
     public function testItemsUsesDbsizeFastPathForWildcardPattern(): void
@@ -184,21 +196,30 @@ final class RedisStatsAsMemcachedTest extends TestCase
         self::assertSame(5, $items['items:1:number']);
         self::assertSame(5, $items['items:1:number_cold']);
         self::assertSame(0, $items['items:1:age'], 'no firstKey → IDLETIME not probed');
-        // dbsize == count so per-key average is exactly 1000.
         self::assertSame(5000, $items['items:1:mem_requested']);
+    }
+
+    public function testItemsUsesFallbackMemoryWhenScanHitsIterationCap(): void
+    {
+        $redis = $this->createMock(RedisStatsBackend::class);
+        $scan = ['count' => 4, 'firstKey' => 'k', 'complete' => false];
+
+        $items = RedisStatsAsMemcached::items($redis, 'pm:v1:*', $scan);
+
+        self::assertSame(4 * MemcachedStatsSchema::PER_KEY_MEMORY_FALLBACK_BYTES, $items['items:1:mem_requested']);
     }
 
     public function testItemsSurvivesObjectIdletimeFailureWithZeroAge(): void
     {
         $redis = $this->createMock(RedisStatsBackend::class);
-        $redis->method('scan')->willReturn([0, ['pm:v1:k']]);
+        $scan = ['count' => 1, 'firstKey' => 'pm:v1:k', 'complete' => true];
         $redis->method('object')->willThrowException(new \RuntimeException('OBJECT not allowed'));
         $redis->method('info')->willReturn([
             'Memory' => ['used_memory' => '1000'],
         ]);
         $redis->method('dbsize')->willReturn(2);
 
-        $items = RedisStatsAsMemcached::items($redis, 'pm:v1:*');
+        $items = RedisStatsAsMemcached::items($redis, 'pm:v1:*', $scan);
 
         self::assertSame(1, $items['items:1:number']);
         self::assertSame(0, $items['items:1:age']);
@@ -206,41 +227,31 @@ final class RedisStatsAsMemcachedTest extends TestCase
 
     public function testItemsIgnoresNonIntIdletimeReply(): void
     {
-        // Some redis-cli compatibility layers return OBJECT IDLETIME as a
-        // string when the resp parser doesn't auto-coerce numerics. The age
-        // field must stay 0 instead of e.g. casting "12" → 12 unchecked —
-        // memcached's stats schema is integer-only.
         $redis = $this->createMock(RedisStatsBackend::class);
-        $redis->method('scan')->willReturn([0, ['pm:v1:k']]);
+        $scan = ['count' => 1, 'firstKey' => 'pm:v1:k', 'complete' => true];
         $redis->method('object')->willReturn('12');
         $redis->method('info')->willReturn(['Memory' => ['used_memory' => '0']]);
         $redis->method('dbsize')->willReturn(1);
 
-        $items = RedisStatsAsMemcached::items($redis, 'pm:v1:*');
+        $items = RedisStatsAsMemcached::items($redis, 'pm:v1:*', $scan);
 
         self::assertSame(0, $items['items:1:age']);
     }
 
     public function testItemsFallsBackToTwoFiftySixBytesPerKeyWhenInfoIsUnavailable(): void
     {
-        // estimateMemRequestedBytes() swallows backend errors so a flaky
-        // server doesn't poison the entire stats RPC. The fallback constant
-        // matches the conservative per-item estimate documented in the file.
         $redis = $this->createMock(RedisStatsBackend::class);
-        $redis->method('scan')->willReturn([0, ['k1', 'k2']]);
+        $scan = ['count' => 2, 'firstKey' => 'k1', 'complete' => true];
         $redis->method('object')->willReturn(0);
         $redis->method('info')->willThrowException(new \RuntimeException('INFO unavailable'));
 
-        $items = RedisStatsAsMemcached::items($redis, 'pm:v1:*');
+        $items = RedisStatsAsMemcached::items($redis, 'pm:v1:*', $scan);
 
-        self::assertSame(2 * 256, $items['items:1:mem_requested']);
+        self::assertSame(2 * MemcachedStatsSchema::PER_KEY_MEMORY_FALLBACK_BYTES, $items['items:1:mem_requested']);
     }
 
     public function testGeneralCoercesFloatAndBoolInfoValues(): void
     {
-        // INFO numeric fields arrive as strings over RESP, but redis client
-        // libraries differ in how they pre-coerce them. intFrom() must accept
-        // floats (truncate) and bools (cast) without losing track of zero.
         $redis = $this->createMock(RedisStatsBackend::class);
         $redis->method('info')->willReturn([
             'Server' => ['redis_version' => '7.4.0'],
@@ -253,16 +264,12 @@ final class RedisStatsAsMemcachedTest extends TestCase
 
         self::assertSame('7.4.0', $stats['version']);
         self::assertSame(12345, $stats['bytes']);
-        self::assertSame(1, $stats['limit_maxbytes']);
+        self::assertSame(MemcachedStatsSchema::DEFAULT_MAX_MEMORY, $stats['limit_maxbytes']);
         self::assertSame(0, $stats['curr_connections'], 'unparsable string → default 0');
     }
 
     public function testGeneralUsesDefaultMaxMemoryWhenRedisHasNoLimit(): void
     {
-        // Redis omits/reports maxmemory=0 when no `maxmemory` directive is
-        // configured (default for new deployments). memcached's stats expose
-        // limit_maxbytes — we surface 8 GB so dashboards have something to
-        // chart instead of the misleading 0.
         $redis = $this->createMock(RedisStatsBackend::class);
         $redis->method('info')->willReturn([
             'Memory' => ['used_memory' => '0', 'maxmemory' => '0'],
@@ -271,14 +278,11 @@ final class RedisStatsAsMemcachedTest extends TestCase
 
         $stats = RedisStatsAsMemcached::general($redis);
 
-        self::assertSame(8_589_934_592, $stats['limit_maxbytes']);
+        self::assertSame(MemcachedStatsSchema::DEFAULT_MAX_MEMORY, $stats['limit_maxbytes']);
     }
 
     public function testGeneralCmdstatLineMissingCallsTokenIsReportedAsZero(): void
     {
-        // Real-world INFO commandstats lines always carry `calls=N`, but if a
-        // Redis fork ever ships them with only the latency histogram, the
-        // counter regex must fail closed (return 0) instead of throwing.
         $redis = $this->createMock(RedisStatsBackend::class);
         $redis->method('info')->willReturn([
             'Commandstats' => [
