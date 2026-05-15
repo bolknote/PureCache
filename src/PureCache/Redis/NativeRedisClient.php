@@ -231,27 +231,6 @@ class NativeRedisClient implements RedisStatsBackend
         return $out;
     }
 
-    public function hset(string $key, string $field, string $value): int
-    {
-        $r = $this->executeRaw(['HSET', $key, $field, $value]);
-
-        return $this->intFromReply($r);
-    }
-
-    public function exists(string $key): int
-    {
-        $r = $this->executeRaw(['EXISTS', $key]);
-
-        return $this->intFromReply($r);
-    }
-
-    public function expire(string $key, int $seconds): int
-    {
-        $r = $this->executeRaw(['EXPIRE', $key, (string) $seconds]);
-
-        return $this->intFromReply($r);
-    }
-
     /** @param list<string> $keys */
     public function del(array $keys): int
     {

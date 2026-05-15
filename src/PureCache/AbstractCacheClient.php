@@ -1945,6 +1945,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      */
     private function invokeCacheCb(callable $cacheCb, string $key, ?string $serverKey, int $getFlags): mixed
     {
+        /** @var mixed $value filled by-ref by the PECL cache_cb signature */
         $value = null;
         $expirationRef = 0;
         $casRef = 0.0;

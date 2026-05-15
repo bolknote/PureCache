@@ -13,6 +13,7 @@ use PureCache\Redis\RedisClient;
 
 final class ClientFactoryTest extends TestCase
 {
+    #[\Override]
     protected function tearDown(): void
     {
         ClientFactory::resetRegistry();

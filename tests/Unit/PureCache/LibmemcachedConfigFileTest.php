@@ -25,6 +25,7 @@ final class LibmemcachedConfigFileTest extends TestCase
     /** @var list<string> */
     private array $tempFiles = [];
 
+    #[\Override]
     protected function tearDown(): void
     {
         foreach ($this->tempFiles as $path) {

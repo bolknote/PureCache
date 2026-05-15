@@ -25,6 +25,9 @@ jobs:
       - name: PHPStan
         run: vendor/bin/phpstan analyse --no-progress --configuration=config/phpstan.neon
 
+      - name: Psalm
+        run: composer psalm
+
       - name: PHP-CS-Fixer (dry run)
         run: vendor/bin/php-cs-fixer fix --dry-run --diff --config=config/php-cs-fixer.dist.php
 

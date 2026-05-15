@@ -221,14 +221,6 @@ final class NativeIgniteClient
         return $this->readBool($response, 0);
     }
 
-    public function cacheContainsKey(int $cacheId, string $key): bool
-    {
-        $body = $this->cacheKeyBody($cacheId, $key);
-        $response = $this->execute(IgniteProtocol::OP_CACHE_CONTAINS_KEY, $body);
-
-        return $this->readBool($response, 0);
-    }
-
     public function cacheRemoveKey(int $cacheId, string $key): bool
     {
         $body = $this->cacheKeyBody($cacheId, $key);
@@ -282,23 +274,6 @@ final class NativeIgniteClient
         }
 
         return $keys;
-    }
-
-    /**
-     * @return list<string>
-     */
-    public function cacheGetNames(): array
-    {
-        $response = $this->execute(IgniteProtocol::OP_CACHE_GET_NAMES, '');
-        $count = IgniteWire::unpackInt32($response, 0);
-        $offset = 4;
-        $names = [];
-        for ($i = 0; $i < $count; ++$i) {
-            [$name, $offset] = $this->readStringObject($response, $offset);
-            $names[] = $name;
-        }
-
-        return $names;
     }
 
     // -----------------------------------------------------------------------

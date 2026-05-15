@@ -19,6 +19,7 @@ use PureCache\MemcachedConstants;
  */
 final class PayloadEncryptionTest extends TestCase
 {
+    #[\Override]
     protected function setUp(): void
     {
         if (!\extension_loaded('openssl')) {

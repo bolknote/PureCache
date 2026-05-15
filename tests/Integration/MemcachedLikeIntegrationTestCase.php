@@ -16,6 +16,7 @@ abstract class MemcachedLikeIntegrationTestCase extends TestCase
 
     abstract protected function createClient(): CacheClient;
 
+    #[\Override]
     public static function setUpBeforeClass(): void
     {
         $fp = @fsockopen(static::integrationHost(), static::integrationPort(), $errno, $errstr, 0.5);

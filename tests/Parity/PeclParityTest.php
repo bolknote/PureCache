@@ -24,6 +24,7 @@ final class PeclParityTest extends TestCase
         return false !== $port ? (int) $port : 11211;
     }
 
+    #[\Override]
     public static function setUpBeforeClass(): void
     {
         if (!\extension_loaded('memcached')) {
@@ -113,7 +114,7 @@ final class PeclParityTest extends TestCase
     public function testSupportedOptionSetGetParity(): void
     {
         $this->assertParity(
-            static fn (\Memcached $client, string $prefix): array => [
+            static fn (\Memcached $client, string $_prefix): array => [
                 'compressionDefault' => $client->getOption(\Memcached::OPT_COMPRESSION),
                 'tcpNoDelayDefault' => $client->getOption(\Memcached::OPT_TCP_NODELAY),
                 'tcpNoDelaySet' => $client->setOption(\Memcached::OPT_TCP_NODELAY, true),
@@ -129,7 +130,7 @@ final class PeclParityTest extends TestCase
                 'recvSizeSet' => $client->setOption(\Memcached::OPT_SOCKET_RECV_SIZE, 8192),
                 'recvSizeAfter' => $client->getOption(\Memcached::OPT_SOCKET_RECV_SIZE),
             ],
-            static fn (MemcachedClient $client, string $prefix): array => [
+            static fn (MemcachedClient $client, string $_prefix): array => [
                 'compressionDefault' => $client->getOption(MemcachedClient::OPT_COMPRESSION),
                 'tcpNoDelayDefault' => $client->getOption(MemcachedClient::OPT_TCP_NODELAY),
                 'tcpNoDelaySet' => $client->setOption(MemcachedClient::OPT_TCP_NODELAY, true),

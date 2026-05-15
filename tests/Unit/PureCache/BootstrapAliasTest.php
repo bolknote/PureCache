@@ -21,6 +21,7 @@ use PureCache\Memcached\MemcachedClient;
  */
 final class BootstrapAliasTest extends TestCase
 {
+    #[\Override]
     public static function setUpBeforeClass(): void
     {
         if (\extension_loaded('memcached')) {

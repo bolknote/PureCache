@@ -100,6 +100,15 @@ final class MemcachedClientStateTest extends TestCase
         self::assertSame('invalid server entry', $client->getResultMessage());
     }
 
+    public function testGetLastErrorMessageMatchesResultSurfaceAfterControlledFailure(): void
+    {
+        $client = new MemcachedClient();
+
+        self::assertFalse($client->addServers([['host' => '127.0.0.1']]));
+        self::assertNotSame('', $client->getLastErrorMessage());
+        self::assertSame($client->getResultMessage(), $client->getLastErrorMessage());
+    }
+
     public function testSetBucketValidationAndSuccess(): void
     {
         $client = new MemcachedClient();
@@ -281,7 +290,7 @@ final class MemcachedClientStateTest extends TestCase
     {
         $calls = 0;
         $id = 'persist-share-'.bin2hex(random_bytes(4));
-        $c1 = new MemcachedClient($id, static function (MemcachedClient $m, ?string $pid) use (&$calls): void {
+        $c1 = new MemcachedClient($id, static function (MemcachedClient $m, ?string $_pid) use (&$calls): void {
             ++$calls;
             $m->setOption(MemcachedClient::OPT_PREFIX_KEY, 'shared:');
         });
@@ -1056,6 +1065,7 @@ final class MemcachedClientStateTest extends TestCase
         $client = new MemcachedClient();
 
         $stringable = new class implements \Stringable {
+            #[\Override]
             public function __toString(): string
             {
                 return 'string-from-object';

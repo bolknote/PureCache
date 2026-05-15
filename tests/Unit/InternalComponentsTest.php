@@ -79,29 +79,35 @@ final class InternalComponentsTest extends TestCase
     private function fakeEnv(): OptionEnvironment
     {
         return new class implements OptionEnvironment {
+            #[\Override]
             public function onPoolInvalidated(): void
             {
             }
 
+            #[\Override]
             public function onTimeoutsChanged(): void
             {
             }
 
+            #[\Override]
             public function isUnsupportedOption(int $option): bool
             {
                 return false;
             }
 
+            #[\Override]
             public function unsupportedOptionMessage(): string
             {
                 return 'option is not supported by the pure PHP meta protocol client';
             }
 
+            #[\Override]
             public function applyCustomOption(int $option, mixed $value, ClientCoreState $core): ?ClientOptionResult
             {
                 return null;
             }
 
+            #[\Override]
             public function maxKeyLength(): int
             {
                 return 250;

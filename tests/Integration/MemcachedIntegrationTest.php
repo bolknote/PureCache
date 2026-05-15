@@ -8,6 +8,7 @@ use PureCache\Memcached\MemcachedClient;
 
 final class MemcachedIntegrationTest extends MemcachedLikeIntegrationTestCase
 {
+    #[\Override]
     protected static function integrationHost(): string
     {
         $host = getenv('MEMCACHED_TEST_HOST');
@@ -15,6 +16,7 @@ final class MemcachedIntegrationTest extends MemcachedLikeIntegrationTestCase
         return false !== $host ? $host : '127.0.0.1';
     }
 
+    #[\Override]
     protected static function integrationPort(): int
     {
         $port = getenv('MEMCACHED_TEST_PORT');
@@ -22,6 +24,7 @@ final class MemcachedIntegrationTest extends MemcachedLikeIntegrationTestCase
         return false !== $port ? (int) $port : 11211;
     }
 
+    #[\Override]
     protected function createClient(): MemcachedClient
     {
         $m = new MemcachedClient();

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace PureCache\Tests\Unit\PureCache;
 
 use PHPUnit\Framework\TestCase;
-use PureCache\CacheClient;
 use PureCache\Memcached\Session\MemcachedSessionHandler;
 use PureCache\MemcachedConstants;
 
@@ -124,6 +123,74 @@ final class MemcachedSessionHandlerTest extends TestCase
     {
         $handler = new MemcachedSessionHandler(new SessionSpyCacheClient());
         self::assertFalse(@$handler->open('PERSISTENT=app,127.0.0.1:11211', 'PHPSESSID'));
+    }
+
+    public function testCloseReleasesSessionLockWhenHeld(): void
+    {
+        $spy = new SessionSpyCacheClient();
+        $spy->getPayload = 'session-data';
+
+        $handler = new MemcachedSessionHandler($spy);
+        self::assertTrue(@$handler->open('127.0.0.1:11211', 'PHPSESSID'));
+
+        self::assertSame('session-data', $handler->read('sid-close'));
+        self::assertTrue($handler->close());
+
+        $lockDeletes = array_values(array_filter(
+            $spy->calls,
+            static fn (array $c): bool => 'delete' === $c['method'] && 'lock.sid-close' === ($c['key'] ?? null),
+        ));
+        self::assertCount(1, $lockDeletes);
+    }
+
+    public function testGcReturnsZero(): void
+    {
+        $handler = new MemcachedSessionHandler(new SessionSpyCacheClient());
+        self::assertSame(0, $handler->gc(3600));
+    }
+
+    public function testCreateSidAttemptsAddWithEmptyPayload(): void
+    {
+        $spy = new SessionSpyCacheClient();
+        $handler = new MemcachedSessionHandler($spy);
+        self::assertTrue($handler->open('127.0.0.1:11211', 'PHPSESSID'));
+
+        $sid = $handler->create_sid();
+
+        self::assertNotSame('', $sid);
+        $addForSid = array_values(array_filter(
+            $spy->calls,
+            static fn (array $c): bool => 'add' === $c['method'] && ($c['key'] ?? null) === $sid,
+        ));
+        self::assertNotEmpty($addForSid);
+        self::assertSame('', $addForSid[0]['value'] ?? null);
+    }
+
+    public function testValidateIdReflectsGetResultCode(): void
+    {
+        $spy = new SessionSpyCacheClient();
+        $spy->getPayload = 'payload';
+
+        $handler = new MemcachedSessionHandler($spy);
+        self::assertTrue($handler->open('127.0.0.1:11211', 'PHPSESSID'));
+
+        self::assertTrue($handler->validateId('sid-val'));
+
+        $spy->getResultCodeStream = [MemcachedConstants::RES_NOTFOUND];
+        self::assertFalse($handler->validateId('missing'));
+    }
+
+    public function testUpdateTimestampDelegatesToTouch(): void
+    {
+        $spy = new SessionSpyCacheClient();
+        $handler = new MemcachedSessionHandler($spy);
+        self::assertTrue($handler->open('127.0.0.1:11211', 'PHPSESSID'));
+
+        self::assertTrue($handler->updateTimestamp('sid-ts', 'data'));
+
+        $touchCalls = array_values(array_filter($spy->calls, static fn (array $c): bool => 'touch' === $c['method']));
+        self::assertCount(1, $touchCalls);
+        self::assertSame('sid-ts', $touchCalls[0]['key'] ?? null);
     }
 
     /**

@@ -94,34 +94,16 @@ final class ServerSelector
         }
     }
 
-    public function isSortHosts(): bool
-    {
-        return $this->sortHosts;
-    }
-
     public function setFailureTracker(ServerFailureTracker $tracker): void
     {
         $this->failureTracker = $tracker;
-    }
-
-    public function getFailureTracker(): ?ServerFailureTracker
-    {
-        return $this->failureTracker;
-    }
-
-    /**
-     * @param \Closure(int): int $rng called as {@code $rng($max)} → random integer in {@code [0,$max]} (inclusive)
-     */
-    public function setRng(\Closure $rng): void
-    {
-        $this->rng = $rng;
     }
 
     /**
      * @param list<int>      $hostMap
      * @param list<int>|null $forwardMap same length as host map when not null (PECL / libmemcached virtual buckets)
      */
-    public function setBucket(array $hostMap, int $replicas, ?array $forwardMap = null): void
+    public function setBucket(array $hostMap, int $_replicas, ?array $forwardMap = null): void
     {
         $this->hostMap = $hostMap;
         $this->forwardMap = $forwardMap;

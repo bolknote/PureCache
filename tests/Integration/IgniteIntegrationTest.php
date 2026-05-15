@@ -9,6 +9,7 @@ use PureCache\Memcached\MemcachedClient;
 
 final class IgniteIntegrationTest extends MemcachedLikeIntegrationTestCase
 {
+    #[\Override]
     protected static function integrationHost(): string
     {
         $host = getenv('IGNITE_TEST_HOST');
@@ -16,6 +17,7 @@ final class IgniteIntegrationTest extends MemcachedLikeIntegrationTestCase
         return false !== $host && '' !== $host ? $host : '127.0.0.1';
     }
 
+    #[\Override]
     protected static function integrationPort(): int
     {
         $port = getenv('IGNITE_TEST_PORT');
@@ -23,6 +25,7 @@ final class IgniteIntegrationTest extends MemcachedLikeIntegrationTestCase
         return false !== $port && '' !== $port ? (int) $port : 10800;
     }
 
+    #[\Override]
     protected function createClient(): IgniteClient
     {
         $client = new IgniteClient();

@@ -36,12 +36,14 @@
         "test:ignite": "@php scripts/run-ignite-tests.php",
         "test:coverage": "@php vendor/bin/phpunit --configuration=config/phpunit.xml --coverage-text --colors=never",
         "phpstan": "phpstan analyse --memory-limit=512M --configuration=config/phpstan.neon",
+        "psalm": "psalm --config=config/psalm.xml --memory-limit=512M --no-progress",
         "cs-fix": "php-cs-fixer fix --config=config/php-cs-fixer.dist.php",
         "cs-check": "php-cs-fixer fix --dry-run --diff --config=config/php-cs-fixer.dist.php",
         "rector": "rector process --config=config/rector.php",
         "rector-check": "rector process --dry-run --no-progress-bar --config=config/rector.php",
         "check": [
             "@phpstan",
+            "@psalm",
             "@cs-check",
             "@rector-check",
             "@test",
@@ -55,6 +57,8 @@
         "rector/rector": "^2.4",
         "phpstan/phpstan-strict-rules": "^2.0",
         "phpstan/phpstan-deprecation-rules": "^2.0",
-        "phpstan/phpstan-phpunit": "^2.0"
+        "phpstan/phpstan-phpunit": "^2.0",
+        "vimeo/psalm": "^6.16",
+        "psalm/plugin-phpunit": "^0.19"
     }
 }

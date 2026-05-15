@@ -21,6 +21,7 @@ use PureCache\Redis\RedisClient;
  */
 final class EncodingKeyTest extends TestCase
 {
+    #[\Override]
     protected function setUp(): void
     {
         if (!\extension_loaded('openssl')) {

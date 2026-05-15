@@ -522,6 +522,9 @@ final class RedisClient extends AbstractCacheClient
 
             try {
                 $fn($this->redisForServerIndex($idx));
+                $this->setResult(self::RES_SUCCESS);
+
+                return true;
             } catch (RedisClientStoreException $redisClientStoreException) {
                 if (RedisItemScripts::STATUS_NOT_FOUND === $redisClientStoreException->outcome) {
                     $this->setResult(self::RES_NOTFOUND);
@@ -531,10 +534,6 @@ final class RedisClient extends AbstractCacheClient
 
                 throw $redisClientStoreException;
             }
-
-            $this->setResult(self::RES_SUCCESS);
-
-            return true;
         }, fanoutWrite: true);
     }
 

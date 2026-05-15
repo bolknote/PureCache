@@ -38,10 +38,12 @@ final class ServerFailureTrackerTest extends TestCase
         $tracker->recordFailure(0);
         self::assertSame(ServerAvailability::TemporarilyDisabled, $tracker->availability(0));
 
-        $now += 30;
+        $now = 1030.0;
+        self::assertGreaterThan(1000.0, $now);
         self::assertSame(ServerAvailability::TemporarilyDisabled, $tracker->availability(0));
 
-        $now += 30.1;
+        $now = 1060.1;
+        self::assertGreaterThan(1030.0, $now);
         self::assertSame(ServerAvailability::Ok, $tracker->availability(0));
     }
 
@@ -56,7 +58,8 @@ final class ServerFailureTrackerTest extends TestCase
         self::assertSame(ServerAvailability::RetryDelayed, $tracker->availability(0));
         self::assertTrue($tracker->isUsable(0));
 
-        $now += 16;
+        $now = 116.0;
+        self::assertGreaterThan(100.0, $now);
         self::assertSame(ServerAvailability::Ok, $tracker->availability(0));
     }
 
@@ -99,7 +102,8 @@ final class ServerFailureTrackerTest extends TestCase
         $tracker->recordFailure(0);
         self::assertSame(ServerAvailability::DeadRemoved, $tracker->availability(0));
 
-        $now += 86400;
+        $now = 86400.0;
+        self::assertGreaterThan(0.0, $now);
         self::assertSame(ServerAvailability::DeadRemoved, $tracker->availability(0), 'evicted server must stay evicted across the dead window');
         self::assertFalse($tracker->isUsable(0));
     }

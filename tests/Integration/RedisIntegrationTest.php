@@ -9,6 +9,7 @@ use PureCache\Redis\RedisClient;
 
 final class RedisIntegrationTest extends MemcachedLikeIntegrationTestCase
 {
+    #[\Override]
     protected static function integrationHost(): string
     {
         $host = getenv('REDIS_TEST_HOST');
@@ -16,6 +17,7 @@ final class RedisIntegrationTest extends MemcachedLikeIntegrationTestCase
         return false !== $host ? $host : '127.0.0.1';
     }
 
+    #[\Override]
     protected static function integrationPort(): int
     {
         $port = getenv('REDIS_TEST_PORT');
@@ -33,6 +35,7 @@ final class RedisIntegrationTest extends MemcachedLikeIntegrationTestCase
         return self::integrationPort();
     }
 
+    #[\Override]
     protected function createClient(): RedisClient
     {
         $m = new RedisClient();

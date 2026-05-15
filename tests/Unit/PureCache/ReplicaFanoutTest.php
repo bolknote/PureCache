@@ -61,7 +61,7 @@ final class ReplicaFanoutTest extends TestCase
         $client = $this->newClientWithThreeServers();
         $client->setOption(MemcachedClient::OPT_NUMBER_OF_REPLICAS, 1);
 
-        $ok = $this->callWriteFanout($client, null, 'item', static fn (int $idx): bool => false);
+        $ok = $this->callWriteFanout($client, null, 'item', static fn (int $_idx): bool => false);
 
         self::assertFalse($ok);
     }

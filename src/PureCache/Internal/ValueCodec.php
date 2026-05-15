@@ -283,7 +283,7 @@ final class ValueCodec
             })(),
             MemcachedConstants::SERIALIZER_MSGPACK => (static function () use ($value, &$flags): string {
                 if (!\function_exists('msgpack_pack')) {
-                    throw new \RuntimeException('msgpack not available');
+                    throw new \RuntimeException('msgpack not available (value type: '.\get_debug_type($value).')');
                 }
 
                 self::setType($flags, self::TYPE_MSGPACK);
@@ -338,6 +338,11 @@ final class ValueCodec
         return igbinary_unserialize($payload);
     }
 
+    /**
+     * @psalm-suppress UnusedParam
+     * {@code msgpack_unpack()} consumes {@code $payload} at runtime; Psalm's
+     * optional ext stubs do not always mark the argument as read.
+     */
     private static function msgpackUnpack(string $payload): mixed
     {
         if (!\function_exists('msgpack_unpack')) {
@@ -382,12 +387,20 @@ final class ValueCodec
 
     private static function parseDouble(string $payload): float
     {
-        return match ($payload) {
-            'NaN', 'NAN' => \NAN,
-            'Infinity', 'INF' => \INF,
-            '-Infinity', '-INF' => -\INF,
-            default => self::castFloatLocaleIndependent($payload),
-        };
+        // IEEE NaN without the NAN constant: Psalm 6.16 + PHP 8.5 can crash on NAN literals.
+        if ('NaN' === $payload || 'NAN' === $payload) {
+            return acos(2.0);
+        }
+
+        if ('Infinity' === $payload || 'INF' === $payload) {
+            return \INF;
+        }
+
+        if ('-Infinity' === $payload || '-INF' === $payload) {
+            return -\INF;
+        }
+
+        return self::castFloatLocaleIndependent($payload);
     }
 
     private static function castFloatLocaleIndependent(string $payload): float

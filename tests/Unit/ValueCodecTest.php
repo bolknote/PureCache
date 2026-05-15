@@ -41,7 +41,8 @@ final class ValueCodecTest extends TestCase
         $cases = [
             \INF,
             -\INF,
-            \NAN,
+            // IEEE NaN without the NAN constant (Psalm 6.16 + PHP 8.5 + NAN literals).
+            acos(2.0),
         ];
 
         foreach ($cases as $value) {

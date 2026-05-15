@@ -266,6 +266,20 @@ If an unsupported call has a per-backend reason, it lands in `getResultMessage()
 verbatim (`flush delay not supported on Redis`, etc.), so application logs can
 attribute parity gaps to the right backend.
 
+## Static analysis
+
+PHPStan and Psalm both cover `src/`, `tests/`, and `bootstrap-alias.php` (see `config/phpstan.neon` and `config/psalm.xml`). A full local gate matches CI expectations:
+
+```bash
+composer phpstan
+composer psalm
+composer check   # phpstan + psalm + style/rector dry-runs + unit tests (with and without optional extensions)
+```
+
+Psalm stores its cache under `cache/psalm/` (the whole `cache/` tree is git-ignored).
+
+`config/psalm.xml` enables **`findUnusedCode="true"`** so unused classes/methods/properties surface during analysis. A few patterns are intentionally noisy for a PECL-shaped library (for example `private __construct` on static-only helpers, interface methods on `CacheClient`, PHPUnit `#[DataProvider]` callables, and promoted `readonly` fields on `KetamaContinuum` that Psalm does not always treat as read). Those are narrowed with `issueHandlers` in the same config file rather than turning the check off globally.
+
 ## Tests
 
 ```bash
