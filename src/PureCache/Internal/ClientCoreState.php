@@ -51,6 +51,11 @@ abstract class ClientCoreState
      */
     public ?EncodingContext $encoding = null;
 
+    protected function __construct(?string $persistentId = null)
+    {
+        $this->initDefaults($persistentId);
+    }
+
     protected function initDefaults(?string $persistentId): void
     {
         $this->persistentId = $persistentId;

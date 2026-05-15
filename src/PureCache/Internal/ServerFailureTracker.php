@@ -117,7 +117,7 @@ final class ServerFailureTracker
         }
 
         if ($this->deadTimeoutSec > 0) {
-            $this->deadUntil[$serverIndex] = $now + $this->deadTimeoutSec;
+            $this->deadUntil[$serverIndex] = $now + (float) $this->deadTimeoutSec;
         }
     }
 

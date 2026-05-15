@@ -36,7 +36,7 @@ final class IgniteReply
     }
 
     /**
-     * @return array{0:?string,1:int} {@code null} value means a protocol NULL object
+     * @return array{0:?string,1:int} null at index 0 means a protocol NULL object
      */
     public static function readByteArrayObject(string $bytes, int $offset): array
     {

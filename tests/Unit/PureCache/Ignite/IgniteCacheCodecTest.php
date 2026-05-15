@@ -33,7 +33,6 @@ final class IgniteCacheCodecTest extends TestCase
         $decoded = IgniteCacheCodec::decodeWrapper($bytes);
         self::assertNotNull($decoded);
         self::assertSame(IgniteCacheCodec::NEVER_EXPIRES, $decoded[2]);
-        self::assertSame(0, $decoded[2]);
     }
 
     public function testWrapperRoundTripsExtremeCas(): void

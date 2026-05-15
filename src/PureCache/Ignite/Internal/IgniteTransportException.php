@@ -17,11 +17,11 @@ final class IgniteTransportException extends \RuntimeException
         parent::__construct('' !== $message ? $message : $reason->defaultMessage(), 0, $previous);
     }
 
-    public static function connectFailed(string $errstr, int $errno): self
+    public static function connectFailed(?string $errstr, ?int $errno): self
     {
         return new self(
             IgniteTransportFailure::ConnectFailed,
-            'Ignite connect failed: '.$errstr.' ('.$errno.')',
+            'Ignite connect failed: '.($errstr ?? '').' ('.($errno ?? 0).')',
         );
     }
 

@@ -369,7 +369,9 @@ final class ValueCodecTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('Invalid decompressed payload length');
 
-        ValueCodec::decode(pack('V', 99).gzcompress('short'), ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_ZLIB, MemcachedClient::SERIALIZER_PHP);
+        $compressed = gzcompress('short');
+        self::assertNotFalse($compressed);
+        ValueCodec::decode(pack('V', 99).$compressed, ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_ZLIB, MemcachedClient::SERIALIZER_PHP);
     }
 
     public function testUnknownStoredTypeReturnsRawPayload(): void

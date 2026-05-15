@@ -40,8 +40,10 @@ final class KetamaContinuum
 
             if ($this->weightedKetama) {
                 $effectiveWeight = $weight > 0 ? $weight : 1;
-                $pct = $totalWeight > 0 ? $effectiveWeight / $totalWeight : 0.0;
-                $pointsPerServer = (int) (floor($pct * self::POINTS_PER_SERVER_KETAMA / 4 * $liveServers + 0.0000000001) * 4);
+                $pct = $totalWeight > 0 ? (float) $effectiveWeight / (float) $totalWeight : 0.0;
+                $pointsPerServer = (int) (floor(
+                    $pct * (float) self::POINTS_PER_SERVER_KETAMA / 4.0 * (float) $liveServers + 0.0000000001,
+                ) * 4.0);
                 $pointsPerHash = 4;
             }
 

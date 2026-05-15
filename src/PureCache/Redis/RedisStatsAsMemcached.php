@@ -315,9 +315,9 @@ final class RedisStatsAsMemcached
             $dbSize = $redis->dbsize();
 
             if ($dbSize > 0 && $usedMemory > 0) {
-                $avgSize = $usedMemory / $dbSize;
+                $avgSize = (float) $usedMemory / (float) $dbSize;
 
-                return (int) min(\PHP_INT_MAX, $avgSize * $count);
+                return (int) min((float) \PHP_INT_MAX, $avgSize * (float) $count);
             }
         } catch (\Exception) {
         }

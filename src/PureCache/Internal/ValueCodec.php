@@ -130,7 +130,7 @@ final class ValueCodec
             [$compressed, $actualType] = self::compressPayload($payload, $compressionType, $compressionLevel);
             if (null !== $compressed) {
                 $origLen = \strlen($payload);
-                if ($origLen > (\strlen($compressed) * $compressionFactor)) {
+                if ((float) $origLen > (float) \strlen($compressed) * $compressionFactor) {
                     $packed = pack('V', $origLen).$compressed;
                     self::setCompressionFlags($flags, $actualType);
                     $payload = $packed;

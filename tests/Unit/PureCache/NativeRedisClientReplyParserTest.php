@@ -116,9 +116,7 @@ final class NativeRedisClientReplyParserTest extends TestCase
             @fclose($reader);
         }
 
-        if (\is_resource($writer)) {
-            @fclose($writer);
-        }
+        @fclose($writer);
     }
 
     private function invokeReadReply(NativeRedisClient $client): mixed

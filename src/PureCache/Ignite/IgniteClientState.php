@@ -19,15 +19,13 @@ final class IgniteClientState extends ClientCoreState
     /** @var array<int, int> server index → resolved Ignite cache id */
     public array $cacheIdByServerIndex = [];
 
-    private function __construct()
+    private function __construct(?string $persistentId = null)
     {
+        parent::__construct($persistentId);
     }
 
     public static function createFresh(?string $persistentId = null): self
     {
-        $state = new self();
-        $state->initDefaults($persistentId);
-
-        return $state;
+        return new self($persistentId);
     }
 }

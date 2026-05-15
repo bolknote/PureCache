@@ -7,7 +7,7 @@ namespace PureCache\Redis;
 /**
  * Minimal Redis TCP client (RESP2). No external Redis PHP extension — same idea as the memcached stack path.
  */
-class NativeRedisClient implements RedisStatsBackend
+final class NativeRedisClient implements RedisStatsBackend
 {
     /**
      * Defensive cap on a single RESP {@code *N} array length. Real Redis
@@ -54,7 +54,7 @@ class NativeRedisClient implements RedisStatsBackend
         stream_set_blocking($stream, true);
         if ($this->readWriteTimeout > 0) {
             $sec = (int) floor($this->readWriteTimeout);
-            $usec = (int) round(($this->readWriteTimeout - $sec) * 1_000_000);
+            $usec = (int) round(($this->readWriteTimeout - (float) $sec) * 1_000_000.0);
             stream_set_timeout($stream, $sec, $usec);
         }
 
@@ -94,8 +94,9 @@ class NativeRedisClient implements RedisStatsBackend
 
     private function forceClose(): void
     {
-        if (\is_resource($this->stream)) {
-            @fclose($this->stream);
+        $stream = $this->stream;
+        if (\is_resource($stream)) {
+            @fclose($stream);
         }
 
         $this->stream = null;
@@ -113,12 +114,7 @@ class NativeRedisClient implements RedisStatsBackend
         } catch (\Throwable) {
         }
 
-        $stream = $this->stream;
-        if (\is_resource($stream)) {
-            fclose($stream);
-        }
-
-        $this->stream = null;
+        $this->forceClose();
     }
 
     public function __destruct()
@@ -580,8 +576,8 @@ class NativeRedisClient implements RedisStatsBackend
                 continue;
             }
 
-            [$k, $v] = explode(':', $row, 2);
-            $info[$current][$k] = $v;
+            $colon = (int) strpos($row, ':');
+            $info[$current][substr($row, 0, $colon)] = substr($row, $colon + 1);
         }
 
         return $info;
@@ -600,8 +596,8 @@ class NativeRedisClient implements RedisStatsBackend
                 continue;
             }
 
-            [$k, $v] = explode(':', $row, 2);
-            $info[$k] = $v;
+            $colon = (int) strpos($row, ':');
+            $info[substr($row, 0, $colon)] = substr($row, $colon + 1);
         }
 
         return $info;

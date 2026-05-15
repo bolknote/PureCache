@@ -24,20 +24,11 @@ trait PersistentStateRegistry
     /** @var array<class-string, array<string, ClientCoreState>> */
     private static array $persistentPoolByBackend = [];
 
-    /**
-     * @return TState|null
-     */
     protected function lookupPersistentState(string $persistentId): ?ClientCoreState
     {
-        /** @var TState|null $state */
-        $state = self::$persistentPoolByBackend[static::class][$persistentId] ?? null;
-
-        return $state;
+        return self::$persistentPoolByBackend[static::class][$persistentId] ?? null;
     }
 
-    /**
-     * @param TState $state
-     */
     protected function registerPersistentState(string $persistentId, ClientCoreState $state): void
     {
         self::$persistentPoolByBackend[static::class][$persistentId] = $state;

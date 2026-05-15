@@ -78,13 +78,13 @@ final class NativeIgniteClient
 
         $stream = @stream_socket_client($remote, $errno, $errstr, $timeout, \STREAM_CLIENT_CONNECT, $context);
         if (!\is_resource($stream)) {
-            throw IgniteTransportException::connectFailed($errstr ?? '', $errno ?? 0);
+            throw IgniteTransportException::connectFailed($errstr, $errno);
         }
 
         stream_set_blocking($stream, true);
         if ($this->readWriteTimeout > 0) {
             $sec = (int) floor($this->readWriteTimeout);
-            $usec = (int) round(($this->readWriteTimeout - $sec) * 1_000_000);
+            $usec = (int) round(($this->readWriteTimeout - (float) $sec) * 1_000_000.0);
             stream_set_timeout($stream, $sec, $usec);
         }
 
@@ -100,8 +100,9 @@ final class NativeIgniteClient
 
     public function disconnect(): void
     {
-        if (\is_resource($this->stream)) {
-            fclose($this->stream);
+        $stream = $this->stream;
+        if (\is_resource($stream)) {
+            fclose($stream);
         }
 
         $this->stream = null;

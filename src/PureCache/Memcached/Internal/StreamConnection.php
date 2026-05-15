@@ -174,8 +174,7 @@ final class StreamConnection
         if (!\is_resource($socket)) {
             $err = error_get_last();
             $msg = $err['message'] ?? $errstr;
-            $connectErrno = \is_int($errno) ? $errno : 0;
-            throw new ConnectionException(\sprintf('%s: %s (%s)', $errorPrefix, $msg, $connectErrno), $connectErrno);
+            throw ConnectionException::fromConnectFailure(\sprintf('%s: %s (%s)', $errorPrefix, $msg, $errno), $errno);
         }
 
         stream_set_blocking($socket, true);
@@ -258,10 +257,9 @@ final class StreamConnection
     }
 
     /**
-     * @return array{0:int|null,1:int|null} {@code [level, optname]} pair to
-     *                                      pass to {@code socket_set_option()};
-     *                                      either may be {@code null} when the
-     *                                      platform doesn't expose the knob
+     * @return array{0:int|null,1:int|null} socket_set_option level and optname;
+     *                                      either may be null when the platform
+     *                                      does not expose the knob
      */
     private function resolveKeepIdleSockoptIds(): array
     {
@@ -331,8 +329,9 @@ final class StreamConnection
 
     public function close(): void
     {
-        if (\is_resource($this->socket)) {
-            fclose($this->socket);
+        $socket = $this->socket;
+        if (\is_resource($socket)) {
+            fclose($socket);
         }
 
         $this->socket = null;

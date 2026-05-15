@@ -15,15 +15,13 @@ final class RedisClientState extends ClientCoreState
     /** @var array<int, NativeRedisClient> */
     public array $redisByServerIndex = [];
 
-    private function __construct()
+    private function __construct(?string $persistentId = null)
     {
+        parent::__construct($persistentId);
     }
 
     public static function createFresh(?string $persistentId = null): self
     {
-        $c = new self();
-        $c->initDefaults($persistentId);
-
-        return $c;
+        return new self($persistentId);
     }
 }

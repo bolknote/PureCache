@@ -54,7 +54,9 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
 
         $reused = null !== $pid ? $this->lookupPersistentState($pid) : null;
         if ($reused instanceof ClientCoreState) {
-            $this->core = $reused;
+            /** @var TState $reusedCore */
+            $reusedCore = $reused;
+            $this->core = $reusedCore;
             $this->poolKey = $pid;
             $this->pristine = false;
 
@@ -87,7 +89,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         $this->pristine = true;
 
         if (null !== $pid) {
-            $this->registerPersistentState($pid, $this->core);
+            $this->registerPersistentState($pid, $this->state());
             $this->poolKey = $pid;
         }
     }
@@ -121,14 +123,8 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      */
     abstract protected function createState(?string $persistentId): ClientCoreState;
 
-    /**
-     * @return TState|null
-     */
     abstract protected function lookupPersistentState(string $persistentId): ?ClientCoreState;
 
-    /**
-     * @param TState $state
-     */
     abstract protected function registerPersistentState(string $persistentId, ClientCoreState $state): void;
 
     /** Default port used by {@see addServer()} / {@see addServers()}. */
@@ -743,7 +739,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             return false;
         }
 
-        $current = $this->core->delayedResults ?? [];
+        $current = $this->requireDelayedResults();
         if ($this->core->delayedCursor >= \count($current) && [] !== $this->core->delayedQueue) {
             $this->core->delayedResults = null;
             $this->core->delayedCursor = 0;
@@ -751,7 +747,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
                 return false;
             }
 
-            $current = $this->core->delayedResults ?? [];
+            $current = $this->requireDelayedResults();
         }
 
         if ($this->core->delayedCursor >= \count($current)) {
@@ -782,7 +778,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             return false;
         }
 
-        $all = \array_slice($this->core->delayedResults ?? [], $this->core->delayedCursor);
+        $all = \array_slice($this->requireDelayedResults(), $this->core->delayedCursor);
         while ([] !== $this->core->delayedQueue) {
             $this->core->delayedResults = null;
             $this->core->delayedCursor = 0;
@@ -790,7 +786,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
                 return false;
             }
 
-            $all = array_merge($all, $this->core->delayedResults ?? []);
+            $all = array_merge($all, $this->requireDelayedResults());
         }
 
         $this->core->delayedResults = [];
@@ -1206,11 +1202,11 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         }
 
         $retryCount = $this->optionInt(self::OPT_STORE_RETRY_COUNT, 0);
-        if ($retryCount <= 0 || self::RES_FAILURE !== $this->core->resultCode) {
+        if ($retryCount <= 0 || self::RES_FAILURE !== $this->getResultCode()) {
             return false;
         }
 
-        $failureCode = $this->core->resultCode;
+        $failureCode = $this->getResultCode();
         $failureMessage = $this->core->resultMessage;
         $totalServers = \count($this->core->selector->getServers());
         if (0 === $totalServers) {
@@ -1235,7 +1231,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
                     return true;
                 }
 
-                if (self::RES_FAILURE !== $this->core->resultCode) {
+                if (self::RES_FAILURE !== $this->getResultCode()) {
                     // The writer reported a non-retriable response (e.g.
                     // RES_NOTSTORED) — surface it verbatim.
                     return false;
@@ -1473,7 +1469,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      */
     protected function recordServerFailure(?int $serverIndex, \Throwable $throwable): void
     {
-        $this->core->lastErrorErrno = $throwable->getCode();
+        $this->core->lastErrorErrno = (int) $throwable->getCode();
         if (null === $serverIndex) {
             return;
         }
@@ -1746,7 +1742,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         $send = $this->optionInt(self::OPT_SEND_TIMEOUT, 0);
         $ms = max($recv, $send);
 
-        return $ms > 0 ? $ms / 1000.0 : 0.0;
+        return $ms > 0 ? (float) $ms / 1000.0 : 0.0;
     }
 
     protected function acceptDeleteTime(int $time): bool
@@ -1875,6 +1871,19 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
         return true;
     }
 
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function requireDelayedResults(): array
+    {
+        $results = $this->core->delayedResults;
+        if (null === $results) {
+            throw new \LogicException('delayed results not primed');
+        }
+
+        return $results;
+    }
+
     private function primeDelayedResults(): bool
     {
         $batch = array_shift($this->core->delayedQueue);
@@ -1941,7 +1950,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
      * by PECL when a {@see get()} misses. Stores the produced value (when truthy) and
      * re-reads through the normal path so flag handling is uniform.
      *
-     * @param callable(CacheClient $client, string $key, mixed &$value, int &$expiration, float &$cas):bool $cacheCb
+     * @param callable(CacheClient, string, mixed, int, float):bool $cacheCb PECL cache_cb; value, expiration, and cas are by-ref at runtime
      */
     private function invokeCacheCb(callable $cacheCb, string $key, ?string $serverKey, int $getFlags): mixed
     {
@@ -1956,7 +1965,7 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             return false;
         }
 
-        $expiration = \is_int($expirationRef) ? $expirationRef : 0;
+        $expiration = $expirationRef;
 
         if (null === $serverKey) {
             $this->set($key, $value, $expiration);

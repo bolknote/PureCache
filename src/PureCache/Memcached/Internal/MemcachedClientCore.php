@@ -16,30 +16,31 @@ final class MemcachedClientCore extends ClientCoreState
 {
     public ConnectionManager $conn;
 
-    private function __construct()
+    private function __construct(?string $persistentId = null)
     {
+        parent::__construct($persistentId);
+        $this->applyIniDefaults(IniConfig::snapshot());
+        $this->conn = $this->newConnectionManager();
     }
 
     public static function createFresh(?string $persistentId = null): self
     {
-        $c = new self();
-        $c->initDefaults($persistentId);
-        $c->applyIniDefaults(IniConfig::snapshot());
-        $c->rebuildConnectionManager();
-
-        return $c;
+        return new self($persistentId);
     }
 
     public function rebuildConnectionManager(): void
     {
-        if (isset($this->conn)) {
-            $this->conn->closeAll();
-        }
+        $this->conn->closeAll();
 
+        $this->conn = $this->newConnectionManager();
+    }
+
+    private function newConnectionManager(): ConnectionManager
+    {
         $recvMs = $this->optionInt(MemcachedConstants::OPT_RECV_TIMEOUT, 0);
         $sendMs = $this->optionInt(MemcachedConstants::OPT_SEND_TIMEOUT, 0);
 
-        $this->conn = new ConnectionManager(
+        return new ConnectionManager(
             $this->selector,
             $this->optionInt(MemcachedConstants::OPT_CONNECT_TIMEOUT, 1000) / 1000,
             $recvMs > 0 ? $recvMs * 1000 : null,

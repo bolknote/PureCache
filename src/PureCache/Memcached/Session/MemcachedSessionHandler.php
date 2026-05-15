@@ -244,7 +244,7 @@ final class MemcachedSessionHandler implements \SessionHandlerInterface, \Sessio
     }
 
     #[\Override]
-    public function gc(int $maxLifetime): int
+    public function gc(int $max_lifetime): int
     {
         return 0;
     }
