@@ -98,6 +98,7 @@ abstract class ClientCoreState
         } else {
             $this->options[MemcachedConstants::OPT_SERIALIZER] = $iniSerializer;
         }
+
         $this->options[MemcachedConstants::OPT_COMPRESSION_TYPE] = $snapshot['compression_type'];
         $this->options[MemcachedConstants::OPT_COMPRESSION_LEVEL] = $snapshot['compression_level'];
         $this->options[MemcachedConstants::OPT_STORE_RETRY_COUNT] = $snapshot['store_retry_count'];
