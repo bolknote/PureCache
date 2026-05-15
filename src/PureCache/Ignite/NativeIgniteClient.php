@@ -22,7 +22,7 @@ use PureCache\Ignite\Internal\IgniteWire;
  * for cluster version discovery). No binary type registration, so the surface
  * area stays small and reviewable.
  *
- * Each instance multiplexes requests onto a single socket and pairs them with
+ * Each instance serializes requests on a single TCP socket and pairs them with
  * server replies by the auto-incrementing {@code requestId} that the protocol
  * echoes in the header. A single transport-level retry (reconnect + resend) is
  * attempted for read-only / idempotent opcodes when the TCP session fails
@@ -191,14 +191,37 @@ final class NativeIgniteClient
             return [];
         }
 
-        $body = $this->cacheInfoBody($cacheId).IgniteWire::packInt32(\count($keys));
-        foreach ($keys as $key) {
+        $uniqueKeys = $this->dedupeKeysPreservingOrder($keys);
+
+        $body = $this->cacheInfoBody($cacheId).IgniteWire::packInt32(\count($uniqueKeys));
+        foreach ($uniqueKeys as $key) {
             $body .= IgniteCacheCodec::encodeStringObject($key);
         }
 
         $response = $this->execute(IgniteProtocol::OP_CACHE_GET_ALL, $body);
 
-        return $this->parseGetAllResponse($response, $keys);
+        return $this->parseGetAllResponse($response, $uniqueKeys);
+    }
+
+    /**
+     * @param list<string> $keys
+     *
+     * @return list<string>
+     */
+    private function dedupeKeysPreservingOrder(array $keys): array
+    {
+        $seen = [];
+        $unique = [];
+        foreach ($keys as $key) {
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $unique[] = $key;
+        }
+
+        return $unique;
     }
 
     /**
@@ -215,10 +238,15 @@ final class NativeIgniteClient
             throw new \RuntimeException('Ignite reply: GET_ALL entry count '.$count.' exceeds requested '.$keyCount);
         }
 
+        $allowed = array_flip($requestedKeys);
         $offset = 4;
         $out = [];
         for ($i = 0; $i < $count; ++$i) {
             [$key, $offset] = IgniteReply::readStringObject($response, $offset);
+            if (!isset($allowed[$key])) {
+                throw new \RuntimeException('Ignite reply: GET_ALL unexpected key');
+            }
+
             [$value, $offset] = IgniteReply::readByteArrayObject($response, $offset);
             if (null !== $value) {
                 $out[$key] = $value;
@@ -348,7 +376,7 @@ final class NativeIgniteClient
             $patch = IgniteWire::unpackInt16($response, 5);
             [$message] = IgniteReply::readStringObject($response, 7);
 
-            throw new \RuntimeException(\sprintf('Ignite handshake failed (server %d.%d.%d): %s', $major, $minor, $patch, $message));
+            throw IgniteTransportException::handshakeFailed(\sprintf('Ignite handshake failed (server %d.%d.%d): %s', $major, $minor, $patch, $message));
         }
 
         $this->nextRequestId = 1;
@@ -394,9 +422,23 @@ final class NativeIgniteClient
     private function closeResourceQuietly(int $resourceId): void
     {
         try {
-            $this->closeResource($resourceId);
+            $this->closeResourceAcrossReconnect($resourceId);
         } catch (\Throwable) {
             // cursor cleanup must not mask the original error path
+        }
+    }
+
+    /**
+     * Best-effort cursor close; reconnects once so cleanup can run after a
+     * transport fault on the scan/SQL pagination path.
+     */
+    private function closeResourceAcrossReconnect(int $resourceId): void
+    {
+        try {
+            $this->closeResource($resourceId);
+        } catch (IgniteTransportException) {
+            $this->reconnectTransport();
+            $this->closeResource($resourceId);
         }
     }
 
@@ -421,13 +463,14 @@ final class NativeIgniteClient
             throw new \RuntimeException('Ignite SQL fields query returned no VERSION row');
         }
 
-        $version = null;
-        for ($row = 0; $row < $rowCount; ++$row) {
+        [$versionValue, $offset] = IgniteReply::readDataObject($response, $offset);
+        for ($col = 1; $col < $columnCount; ++$col) {
+            [, $offset] = IgniteReply::readDataObject($response, $offset);
+        }
+
+        for ($row = 1; $row < $rowCount; ++$row) {
             for ($col = 0; $col < $columnCount; ++$col) {
-                [$value, $offset] = IgniteReply::readDataObject($response, $offset);
-                if (null === $version && null !== $value && '' !== (string) $value) {
-                    $version = (string) $value;
-                }
+                [, $offset] = IgniteReply::readDataObject($response, $offset);
             }
         }
 
@@ -438,11 +481,11 @@ final class NativeIgniteClient
             throw new \RuntimeException('Ignite SQL fields reply has trailing bytes');
         }
 
-        if (null === $version) {
+        if (null === $versionValue || '' === (string) $versionValue) {
             throw new \RuntimeException('Ignite SQL fields query returned empty VERSION');
         }
 
-        return $version;
+        return (string) $versionValue;
     }
 
     private function execute(int $opCode, string $body): string
@@ -458,7 +501,11 @@ final class NativeIgniteClient
 
             $this->reconnectTransport();
 
-            return $this->executeOnce($opCode, $body);
+            try {
+                return $this->executeOnce($opCode, $body);
+            } catch (IgniteTransportException $second) {
+                throw new IgniteTransportException(IgniteTransportFailure::RetryExhausted, 'Ignite transport retry exhausted', $second);
+            }
         }
     }
 
@@ -538,17 +585,17 @@ final class NativeIgniteClient
 
     private function writeBytes(string $data): void
     {
-        if (!\is_resource($this->stream)) {
+        $stream = $this->stream;
+        if (!\is_resource($stream)) {
             throw new IgniteTransportException(IgniteTransportFailure::NotConnected);
         }
 
         $total = \strlen($data);
         $written = 0;
         while ($written < $total) {
-            $chunk = fwrite($this->stream, substr($data, $written));
-            if (false === $chunk || 0 === $chunk) {
-                $this->checkTimeout();
-                throw new IgniteTransportException(IgniteTransportFailure::WriteFailed);
+            $chunk = fwrite($stream, substr($data, $written));
+            if (false === $chunk || $chunk < 1) {
+                $this->throwWriteFailure();
             }
 
             $written += $chunk;
@@ -563,16 +610,16 @@ final class NativeIgniteClient
             return '';
         }
 
-        if (!\is_resource($this->stream)) {
+        $stream = $this->stream;
+        if (!\is_resource($stream)) {
             throw new IgniteTransportException(IgniteTransportFailure::NotConnected);
         }
 
         $buf = '';
         while (($remaining = $length - \strlen($buf)) > 0) {
-            $chunk = fread($this->stream, $remaining);
+            $chunk = fread($stream, $remaining);
             if (false === $chunk || '' === $chunk) {
-                $this->checkTimeout();
-                throw new IgniteTransportException(IgniteTransportFailure::ReadTruncated);
+                $this->throwReadFailure();
             }
 
             $buf .= $chunk;
@@ -583,15 +630,45 @@ final class NativeIgniteClient
         return $buf;
     }
 
-    private function checkTimeout(): void
+    /**
+     * @return never
+     */
+    private function throwReadFailure(): void
     {
         if (!\is_resource($this->stream)) {
-            return;
+            throw new IgniteTransportException(IgniteTransportFailure::NotConnected);
         }
 
         $meta = stream_get_meta_data($this->stream);
         if ($meta['timed_out']) {
             throw new IgniteTransportException(IgniteTransportFailure::ReadTimedOut);
         }
+
+        if ($meta['eof']) {
+            throw new IgniteTransportException(IgniteTransportFailure::ConnectionClosed);
+        }
+
+        throw new IgniteTransportException(IgniteTransportFailure::ReadTruncated);
+    }
+
+    /**
+     * @return never
+     */
+    private function throwWriteFailure(): void
+    {
+        if (!\is_resource($this->stream)) {
+            throw new IgniteTransportException(IgniteTransportFailure::NotConnected);
+        }
+
+        $meta = stream_get_meta_data($this->stream);
+        if ($meta['timed_out']) {
+            throw new IgniteTransportException(IgniteTransportFailure::ReadTimedOut);
+        }
+
+        if ($meta['eof']) {
+            throw new IgniteTransportException(IgniteTransportFailure::ConnectionClosed);
+        }
+
+        throw new IgniteTransportException(IgniteTransportFailure::WriteFailed);
     }
 }

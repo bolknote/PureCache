@@ -25,6 +25,8 @@ final class NativeIgniteClientTransportTest extends TestCase
         yield 'get all' => [IgniteProtocol::OP_CACHE_GET_ALL, true];
         yield 'get size' => [IgniteProtocol::OP_CACHE_GET_SIZE, true];
         yield 'resource close' => [IgniteProtocol::OP_RESOURCE_CLOSE, true];
+        yield 'sql fields' => [IgniteProtocol::OP_QUERY_SQL_FIELDS, true];
+        yield 'contains key' => [IgniteProtocol::OP_CACHE_CONTAINS_KEY, false];
         yield 'put' => [IgniteProtocol::OP_CACHE_PUT, false];
         yield 'put if absent' => [IgniteProtocol::OP_CACHE_PUT_IF_ABSENT, false];
         yield 'clear' => [IgniteProtocol::OP_CACHE_CLEAR, false];

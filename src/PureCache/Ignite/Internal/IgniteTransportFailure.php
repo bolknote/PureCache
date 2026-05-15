@@ -13,11 +13,14 @@ enum IgniteTransportFailure
     case WriteFailed;
     case ReadTruncated;
     case ReadTimedOut;
+    case ConnectionClosed;
     case FrameLengthInvalid;
     case FrameLengthExceeded;
     case ReplyTooShort;
     case RequestIdMismatch;
     case ConnectFailed;
+    case HandshakeFailed;
+    case RetryExhausted;
 
     public function defaultMessage(): string
     {
@@ -26,11 +29,14 @@ enum IgniteTransportFailure
             self::WriteFailed => 'Ignite write failed',
             self::ReadTruncated => 'Ignite read truncated',
             self::ReadTimedOut => 'Ignite read timed out',
+            self::ConnectionClosed => 'Ignite connection closed by peer',
             self::FrameLengthInvalid => 'Ignite reply: invalid frame length',
             self::FrameLengthExceeded => 'Ignite reply: frame length exceeds maximum',
             self::ReplyTooShort => 'Ignite reply too short',
             self::RequestIdMismatch => 'Ignite reply request id mismatch',
             self::ConnectFailed => 'Ignite connect failed',
+            self::HandshakeFailed => 'Ignite handshake failed',
+            self::RetryExhausted => 'Ignite transport retry exhausted',
         };
     }
 }

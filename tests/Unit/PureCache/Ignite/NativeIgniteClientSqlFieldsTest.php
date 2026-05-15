@@ -76,4 +76,19 @@ final class NativeIgniteClientSqlFieldsTest extends TestCase
         $client = new NativeIgniteClient('127.0.0.1', 10800);
         self::assertSame('2.16.0', $method->invoke($client, $response));
     }
+
+    public function testParseSqlFieldsVersionUsesFirstColumnNotLaterColumns(): void
+    {
+        $response = IgniteWire::packInt64(0)
+            .IgniteWire::packInt32(2)
+            .IgniteWire::packInt32(1)
+            .IgniteCacheCodec::encodeStringObject('2.16.0')
+            .IgniteCacheCodec::encodeStringObject('ignored-extra-column')
+            .IgniteWire::packInt8(0);
+
+        $method = new \ReflectionMethod(NativeIgniteClient::class, 'parseSqlFieldsVersion');
+
+        $client = new NativeIgniteClient('127.0.0.1', 10800);
+        self::assertSame('2.16.0', $method->invoke($client, $response));
+    }
 }

@@ -37,4 +37,9 @@ final class IgniteTransportException extends \RuntimeException
             'Ignite reply: frame length '.$length.' exceeds maximum '.$max,
         );
     }
+
+    public static function handshakeFailed(string $message): self
+    {
+        return new self(IgniteTransportFailure::HandshakeFailed, $message);
+    }
 }

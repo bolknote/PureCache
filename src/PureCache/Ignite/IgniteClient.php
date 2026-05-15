@@ -7,6 +7,7 @@ namespace PureCache\Ignite;
 use PureCache\AbstractCacheClient;
 use PureCache\Ignite\Internal\IgniteCacheCodec;
 use PureCache\Ignite\Internal\IgniteCommandResultMapper;
+use PureCache\Ignite\Internal\IgniteTransportException;
 use PureCache\Internal\CacheEntry;
 use PureCache\Internal\Expiration;
 use PureCache\Internal\PersistentStateRegistry;
@@ -951,6 +952,15 @@ final class IgniteClient extends AbstractCacheClient
         if ($throwable instanceof IgniteCommandException) {
             $this->setResult(
                 IgniteCommandResultMapper::toResultCode($throwable->statusCode),
+                $throwable->getMessage(),
+            );
+
+            return;
+        }
+
+        if ($throwable instanceof IgniteTransportException) {
+            $this->setResult(
+                IgniteCommandResultMapper::transportToResultCode($throwable->reason),
                 $throwable->getMessage(),
             );
 

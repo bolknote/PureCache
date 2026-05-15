@@ -41,4 +41,20 @@ final class NativeIgniteClientGetAllTest extends TestCase
 
         $method->invoke($client, $response, ['k']);
     }
+
+    public function testParseGetAllResponseRejectsUnexpectedKey(): void
+    {
+        $response = IgniteWire::packInt32(1)
+            .IgniteCacheCodec::encodeStringObject('not-requested')
+            .IgniteCacheCodec::encodeByteArrayObject('v');
+
+        $method = new \ReflectionMethod(NativeIgniteClient::class, 'parseGetAllResponse');
+
+        $client = new NativeIgniteClient('127.0.0.1', 10800);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('unexpected key');
+
+        $method->invoke($client, $response, ['expected-key']);
+    }
 }

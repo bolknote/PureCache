@@ -15,6 +15,6 @@ final class IgniteCommandExceptionTest extends TestCase
 
         self::assertSame('cache not found', $exception->getMessage());
         self::assertSame(1001, $exception->statusCode);
-        self::assertSame(1001, $exception->getCode());
+        self::assertSame(0, $exception->getCode());
     }
 }

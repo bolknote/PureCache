@@ -39,19 +39,13 @@ final class IgniteProtocol
 
     public const int STATUS_AUTH_FAILED = 2000;
 
-    /**
-     * Opcodes safe to resend once after a transport reconnect (read-only cache
-     * ops, idempotent resource close, and the read-only VERSION SQL probe).
-     *
-     * @var list<int>
-     */
+    /** @var array<int, true> opcodes safe to resend once after transport reconnect */
     private const array TRANSPORT_RETRY_OPCODES = [
-        self::OP_CACHE_GET,
-        self::OP_CACHE_GET_ALL,
-        self::OP_CACHE_GET_SIZE,
-        self::OP_CACHE_CONTAINS_KEY,
-        self::OP_QUERY_SQL_FIELDS,
-        self::OP_RESOURCE_CLOSE,
+        self::OP_CACHE_GET => true,
+        self::OP_CACHE_GET_ALL => true,
+        self::OP_CACHE_GET_SIZE => true,
+        self::OP_QUERY_SQL_FIELDS => true,
+        self::OP_RESOURCE_CLOSE => true,
     ];
 
     public const int PROTOCOL_MAJOR = 1;
@@ -111,6 +105,6 @@ final class IgniteProtocol
 
     public static function allowsTransportRetry(int $opCode): bool
     {
-        return \in_array($opCode, self::TRANSPORT_RETRY_OPCODES, true);
+        return isset(self::TRANSPORT_RETRY_OPCODES[$opCode]);
     }
 }
