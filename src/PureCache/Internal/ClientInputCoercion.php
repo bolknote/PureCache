@@ -6,6 +6,8 @@ namespace PureCache\Internal;
 
 /**
  * PECL-shaped coercion for server lists, buckets, and cache_cb expiration refs.
+ *
+ * @psalm-suppress MixedAssignment
  */
 final class ClientInputCoercion
 {

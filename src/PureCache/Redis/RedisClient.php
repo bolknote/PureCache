@@ -20,6 +20,10 @@ use PureCache\Redis\Internal\RedisInfoReplyFlatten;
 /**
  * PECL {@code \Memcached}-shaped client backed by Redis instances over plain RESP2.
  *
+ * @psalm-import-type RedisReply from \PureCache\Internal\PsalmTypes
+ *
+ * @psalm-suppress MixedAssignment
+ *
  * Inherits the entire user-facing surface from {@see AbstractCacheClient}; this subclass
  * only implements the Redis-specific I/O primitives (HGETALL reads, EVALSHA-driven
  * Memcached-style mutations, server-by-server pipelining for batch reads, etc.) and
@@ -196,6 +200,7 @@ final class RedisClient extends AbstractCacheClient
     protected function doGetMulti(array $keys, ?string $serverKey, int $getFlags): array|false
     {
         try {
+            /** @var array<string, mixed> $found */
             $found = [];
             $byServer = $this->groupKeysByServer($keys, $serverKey);
             foreach ($byServer as $idx => $pairs) {
@@ -333,6 +338,7 @@ final class RedisClient extends AbstractCacheClient
 
         return $this->retryStoreOnFailure($serverKey, $key, function (int $idx) use ($fn): bool {
             try {
+                /** @var callable(NativeRedisClient): void $fn */
                 return $this->runStoreFn($fn, $idx);
             } catch (\Throwable $throwable) {
                 $this->recordServerFailure($idx, $throwable);

@@ -10,6 +10,8 @@ use PureCache\MemcachedConstants;
  * Mutable state shared by client instances that participate in PECL-style
  * in-process persistent pooling (same {@code persistent_id}). Subclasses add
  * backend-specific resources (connection pools, transport handles, etc.).
+ *
+ * @psalm-import-type ClientOptionsMap from PsalmTypes
  */
 abstract class ClientCoreState
 {
@@ -17,7 +19,7 @@ abstract class ClientCoreState
 
     public ServerFailureTracker $failureTracker;
 
-    /** @var array<int, mixed> */
+    /** @var ClientOptionsMap */
     public array $options = [];
 
     public int $compressionThreshold = 2000;
@@ -94,17 +96,7 @@ abstract class ClientCoreState
      */
     public function applyIniDefaults(array $snapshot): void
     {
-        // INI default string is {@code php} while {@see ClientOptions::defaultSerializer()}
-        // follows igbinary/msgpack/PHP when those extensions are loaded; only
-        // override with the snapshot when it is not that stock PHP mapping.
-        $iniSerializer = $snapshot['serializer'];
-        $runtimeDefault = ClientOptions::defaultSerializer();
-        if (MemcachedConstants::SERIALIZER_PHP === $iniSerializer
-            && MemcachedConstants::SERIALIZER_PHP !== $runtimeDefault) {
-            $this->options[MemcachedConstants::OPT_SERIALIZER] = $runtimeDefault;
-        } else {
-            $this->options[MemcachedConstants::OPT_SERIALIZER] = $iniSerializer;
-        }
+        $this->options[MemcachedConstants::OPT_SERIALIZER] = $snapshot['serializer'];
 
         $this->options[MemcachedConstants::OPT_COMPRESSION_TYPE] = $snapshot['compression_type'];
         $this->options[MemcachedConstants::OPT_COMPRESSION_LEVEL] = $snapshot['compression_level'];
@@ -134,21 +126,15 @@ abstract class ClientCoreState
 
     public function optionInt(int $option, int $default): int
     {
-        $value = $this->options[$option] ?? $default;
-        if (\is_int($value)) {
-            return $value;
-        }
-
-        return $default;
+        return isset($this->options[$option]) && \is_int($this->options[$option])
+            ? $this->options[$option]
+            : $default;
     }
 
     public function optionBool(int $option, bool $default): bool
     {
-        $value = $this->options[$option] ?? $default;
-        if (\is_bool($value)) {
-            return $value;
-        }
-
-        return $default;
+        return isset($this->options[$option]) && \is_bool($this->options[$option])
+            ? $this->options[$option]
+            : $default;
     }
 }

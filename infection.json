@@ -15,8 +15,8 @@
     "mutators": {
         "@default": true
     },
-    "minMsi": 90,
-    "minCoveredMsi": 95,
+    "minMsi": 98,
+    "minCoveredMsi": 99,
     "ignoreMsiWithNoMutations": true,
     "timeout": 10,
     "threads": 4

@@ -37,6 +37,8 @@ use PureCache\Memcached\Internal\TimeoutException;
  * the {@see OptionEnvironment} hooks that let option changes invalidate backend resources.
  *
  * @template TState of ClientCoreState
+ *
+ * @psalm-suppress MixedArgumentTypeCoercion
  */
 abstract class AbstractCacheClient extends MemcachedConstants implements CacheClient, OptionEnvironment
 {
@@ -363,7 +365,15 @@ abstract class AbstractCacheClient extends MemcachedConstants implements CacheCl
             fn (string $key, string $prefixedKey, ?string $serverKey, int $getFlags): mixed => $this->doGet($key, $prefixedKey, $serverKey, $getFlags),
             fn (array $keyStrings, ?string $serverKey, int $getFlags): array|false => $this->doGetMulti($keyStrings, $serverKey, $getFlags),
             fn (string $key, ?string $serverKey, int $time): bool => $this->doDelete($key, $serverKey, $time),
-            fn (array $keys, ?string $serverKey, bool $withCas, callable $valueCb): bool => $this->doGetDelayedValueCallback($keys, $serverKey, $withCas, $valueCb),
+            fn (array $keys, ?string $serverKey, bool $withCas, callable $valueCb): bool => $this->doGetDelayedValueCallback(
+                $keys,
+                $serverKey,
+                $withCas,
+                /*
+                 * @param callable(CacheClient, array<string, mixed>): void $valueCb
+                 */
+                $valueCb,
+            ),
             fn (array $keys, ?string $serverKey, bool $withCas): array|false => $this->doFetchBatch($keys, $serverKey, $withCas),
             fn (string $key, mixed $value, int $expiration): bool => $this->set($key, $value, $expiration),
             fn (string $key, int $getFlags): mixed => $this->get($key, null, $getFlags),

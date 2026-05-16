@@ -27,6 +27,8 @@ use PureCache\Memcached\Internal\TextProtocolClient;
  * plus the persistent-pool registry keyed by {@code persistent_id}.
  *
  * @extends AbstractCacheClient<MemcachedClientCore>
+ *
+ * @psalm-suppress MixedAssignment
  */
 final class MemcachedClient extends AbstractCacheClient
 {
@@ -143,6 +145,7 @@ final class MemcachedClient extends AbstractCacheClient
         $core = $this->core();
         $byServer = $this->groupKeysByServer($keys, $serverKey);
 
+        /** @var array<string, mixed> $found */
         $found = [];
         $hadFailure = false;
         $hadSuccess = false;

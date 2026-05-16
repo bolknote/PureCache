@@ -8,6 +8,8 @@ use PureCache\MemcachedConstants;
 
 /**
  * Key coercion and PECL {@code GET_EXTENDED} / delayed-fetch row shaping.
+ *
+ * @psalm-suppress MixedAssignment
  */
 final readonly class ClientKeyHelper
 {

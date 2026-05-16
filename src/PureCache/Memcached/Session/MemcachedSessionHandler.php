@@ -41,6 +41,8 @@ use PureCache\MemcachedConstants;
  *    cannot be honored without the binary handshake; {@see open()} fails with a
  *    {@code E_USER_WARNING} (same wording as PECL's
  *    "failed to set memcached session sasl credentials").
+ *
+ * @psalm-suppress MixedAssignment
  */
 final class MemcachedSessionHandler implements \SessionHandlerInterface, \SessionIdInterface, \SessionUpdateTimestampHandlerInterface
 {

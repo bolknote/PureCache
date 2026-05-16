@@ -479,6 +479,30 @@ final class LibmemcachedConfigFileTest extends TestCase
         self::assertStringContainsString('skipping unknown token "oops_garbage"', $captured[0]);
     }
 
+    public function testSocketDirectiveAddsUnixServer(): void
+    {
+        $path = $this->reserveTempPath();
+        $socketPath = sys_get_temp_dir().'/purecache-sock-'.uniqid('', true);
+        file_put_contents($path, '--SOCKET="'.$socketPath.'"/?2'."\n");
+
+        $client = new MemcachedClient();
+        self::assertTrue($client->setOption(MemcachedClient::OPT_LOAD_FROM_FILE, $path));
+        $servers = $client->getServerList();
+        self::assertCount(1, $servers);
+        self::assertSame($socketPath, $servers[0]['host']);
+        self::assertSame(2, $servers[0]['weight']);
+    }
+
+    public function testErrorDirectiveStopsParsing(): void
+    {
+        $client = new MemcachedClient();
+        self::assertFalse($client->setOption(
+            MemcachedClient::OPT_LOAD_FROM_FILE,
+            $this->writeConfig("ERROR\n--SERVER=never:11211\n"),
+        ));
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+    }
+
     public function testFileExceedingSizeLimitIsRejected(): void
     {
         $path = $this->reserveTempPath();

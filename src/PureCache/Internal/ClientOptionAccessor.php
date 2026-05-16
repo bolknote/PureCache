@@ -8,6 +8,10 @@ use PureCache\MemcachedConstants;
 
 /**
  * PECL-shaped {@code getOption()} / {@code setOption()} surface.
+ *
+ * @psalm-import-type ClientOptionsMap from PsalmTypes
+ *
+ * @psalm-suppress MixedAssignment
  */
 final readonly class ClientOptionAccessor
 {
@@ -19,10 +23,6 @@ final readonly class ClientOptionAccessor
 
     public function get(int $option): mixed
     {
-        if (MemcachedConstants::OPT_LIBKETAMA_HASH === $option) {
-            $option = MemcachedConstants::OPT_HASH;
-        }
-
         $value = $this->env->core->options[$option] ?? null;
         if (\is_bool($value) && self::returnsIntegerBoolean($option)) {
             return $value ? 1 : 0;

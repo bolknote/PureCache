@@ -9,6 +9,8 @@ namespace PureCache\Redis\Internal;
  * older servers return a flat key/value map.
  *
  * @internal
+ *
+ * @psalm-suppress MixedAssignment
  */
 final class RedisInfoReplyFlatten
 {

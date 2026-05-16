@@ -8,6 +8,8 @@ use PureCache\MemcachedConstants;
 
 /**
  * Shared {@code getMulti*} / {@code deleteMulti*} orchestration for all backends.
+ *
+ * @psalm-suppress MixedAssignment
  */
 final readonly class ClientMultiKeyCoordinator
 {

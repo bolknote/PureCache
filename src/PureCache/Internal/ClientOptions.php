@@ -8,6 +8,8 @@ use PureCache\MemcachedConstants;
 
 /**
  * Central option defaults and scalar coercion rules for the PECL-shaped API.
+ *
+ * @psalm-import-type ClientOptionsMap from PsalmTypes
  */
 final class ClientOptions
 {
@@ -16,7 +18,7 @@ final class ClientOptions
     }
 
     /**
-     * @return array<int, mixed>
+     * @return ClientOptionsMap
      */
     public static function defaults(): array
     {
@@ -27,6 +29,7 @@ final class ClientOptions
             MemcachedConstants::OPT_SERIALIZER => self::defaultSerializer(),
             MemcachedConstants::OPT_PREFIX_KEY => '',
             MemcachedConstants::OPT_HASH => MemcachedConstants::HASH_DEFAULT,
+            MemcachedConstants::OPT_LIBKETAMA_HASH => MemcachedConstants::HASH_DEFAULT,
             MemcachedConstants::OPT_DISTRIBUTION => MemcachedConstants::DISTRIBUTION_MODULA,
             MemcachedConstants::OPT_LIBKETAMA_COMPATIBLE => false,
             MemcachedConstants::OPT_BUFFER_WRITES => false,
@@ -150,14 +153,29 @@ final class ClientOptions
     }
 
     /**
-     * Picks the initial {@code OPT_SERIALIZER} the same way PECL does: igbinary
-     * first if its extension is loaded, then msgpack, otherwise PHP's native
-     * {@code serialize()}. Apps that switch backends shouldn't see the wire
-     * format change underneath them, so the choice has to mirror PECL's
-     * documented order — see ext/memcached's {@code php_memc_init_globals()}.
+     * Picks the {@code memcached.serializer} INI default the same way PECL does
+     * at compile time ({@code SERIALIZER_DEFAULT} in
+     * {@code php_memcached_private.h}): igbinary when built with
+     * {@code HAVE_MEMCACHED_IGBINARY}, else msgpack, else PHP. When
+     * ext-memcached is loaded we read its {@code HAVE_*} flags so the empty-INI
+     * case matches a distro PECL build on the same host.
      */
     public static function defaultSerializer(): int
     {
+        if (\extension_loaded('memcached')) {
+            /** @psalm-suppress RedundantCondition */
+            if (\Memcached::HAVE_IGBINARY) {
+                return MemcachedConstants::SERIALIZER_IGBINARY;
+            }
+
+            /** @psalm-suppress RedundantCondition */
+            if (\Memcached::HAVE_MSGPACK) {
+                return MemcachedConstants::SERIALIZER_MSGPACK;
+            }
+
+            return MemcachedConstants::SERIALIZER_PHP;
+        }
+
         if (\extension_loaded('igbinary')) {
             return MemcachedConstants::SERIALIZER_IGBINARY;
         }

@@ -203,6 +203,13 @@ function handleMetaGet($client, string $line, array &$store): void
     }
 
     $key = $parts[1];
+    $poisonPrefix = getenv('FAKE_META_GET_ERROR_PREFIX');
+    if (false !== $poisonPrefix && '' !== $poisonPrefix && str_starts_with($key, $poisonPrefix)) {
+        fwrite($client, "CLIENT_ERROR poisoned get\r\n");
+
+        return;
+    }
+
     $wantsValue = in_array('v', $parts, true);
     if (!$wantsValue) {
         if (!isset($store[$key])) {

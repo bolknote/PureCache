@@ -52,7 +52,7 @@
         ],
         "test:coverage": [
             "@php vendor/bin/phpunit --configuration=config/phpunit-coverage.xml --coverage-text --colors=never",
-            "@php scripts/assert-min-line-coverage.php cache/coverage.xml 86"
+            "@php scripts/assert-min-line-coverage.php cache/coverage.xml 90"
         ],
         "test:mutation": "@php scripts/run-infection.php",
         "phpstan": "phpstan analyse --memory-limit=512M --configuration=config/phpstan.neon",

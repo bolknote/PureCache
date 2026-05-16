@@ -102,6 +102,13 @@ final class IgniteClientWireTest extends TestCase
         self::assertFalse($client->get('listed'));
     }
 
+    public function testSetMultiWithEmptyArraySucceeds(): void
+    {
+        $client = $this->clientOnFakeIgnite();
+        self::assertTrue($client->setMulti([]));
+        self::assertSame(IgniteClient::RES_SUCCESS, $client->getResultCode());
+    }
+
     public function testSetMultiOnFakeIgnite(): void
     {
         $client = $this->clientOnFakeIgnite();
@@ -150,6 +157,14 @@ final class IgniteClientWireTest extends TestCase
 
         $results = $client->deleteMulti(['d1', 'd2', 'missing']);
         self::assertSame([true, true, IgniteClient::RES_NOTFOUND], array_values($results));
+    }
+
+    public function testAppendWithCompressionEnabledFails(): void
+    {
+        $client = $this->clientOnFakeIgnite();
+        self::assertTrue($client->set('txt', 'mid'));
+        self::assertFalse(@$client->append('txt', 'tail'));
+        self::assertSame(IgniteClient::RES_NOTSTORED, $client->getResultCode());
     }
 
     public function testAppendAndPrependOnFakeIgnite(): void
@@ -291,6 +306,22 @@ final class IgniteClientWireTest extends TestCase
         self::assertIsArray($client->getStats('slabs'));
     }
 
+    public function testPrependByKeyOnFakeIgnite(): void
+    {
+        $client = $this->clientOnFakeIgnite();
+        self::assertTrue($client->setOption(IgniteClient::OPT_COMPRESSION, false));
+        self::assertTrue($client->setByKey('route', 'txt', 'mid'));
+        self::assertTrue($client->prependByKey('route', 'txt', 'pre_'));
+        self::assertSame('pre_mid', $client->getByKey('route', 'txt'));
+    }
+
+    public function testFlushDelayIsNotSupportedOnFakeIgnite(): void
+    {
+        $client = $this->clientOnFakeIgnite();
+        self::assertFalse($client->flush(1));
+        self::assertSame(IgniteClient::RES_NOT_SUPPORTED, $client->getResultCode());
+    }
+
     public function testGetStatsItemsTypeOnFakeIgnite(): void
     {
         $client = $this->clientOnFakeIgnite();
@@ -298,6 +329,81 @@ final class IgniteClientWireTest extends TestCase
         $items = $client->getStats('items');
         self::assertIsArray($items);
         self::assertNotSame([], $items);
+    }
+
+    public function testTouchByKeyOnFakeIgnite(): void
+    {
+        $client = $this->clientOnFakeIgnite();
+        self::assertTrue($client->setByKey('route', 'touch', 'v', 30));
+        self::assertTrue($client->touchByKey('route', 'touch', 120));
+        self::assertSame('v', $client->getByKey('route', 'touch'));
+    }
+
+    public function testAddByKeyOnFakeIgnite(): void
+    {
+        $client = $this->clientOnFakeIgnite();
+        self::assertTrue($client->addByKey('route', 'fresh', 'v'));
+        self::assertFalse($client->addByKey('route', 'fresh', 'v2'));
+        self::assertSame('v', $client->getByKey('route', 'fresh'));
+    }
+
+    public function testResetServerListOnFakeIgnite(): void
+    {
+        $client = $this->clientOnFakeIgnite();
+        $port = $client->getServerList()[0]['port'];
+        self::assertTrue($client->resetServerList());
+        self::assertTrue($client->addServer('127.0.0.1', $port));
+        self::assertTrue($client->set('after-reset', 1));
+    }
+
+    public function testSetByKeyRejectsInvalidServerKey(): void
+    {
+        $client = $this->clientOnFakeIgnite();
+        self::assertFalse($client->setByKey("bad\rkey", 'k', 'v'));
+        self::assertSame(IgniteClient::RES_BAD_KEY_PROVIDED, $client->getResultCode());
+    }
+
+    public function testFetchAllFailsAfterFakeServerStops(): void
+    {
+        $port = $this->reserveEphemeralPort();
+        $process = $this->startFakeWireWorker('fake_ignite_store_server.php', [
+            'FAKE_IGNITE_PORT' => (string) $port,
+        ]);
+
+        $client = new IgniteClient();
+        $client->addServer('127.0.0.1', $port);
+        self::assertTrue($client->set('delayed', 'payload'));
+        self::assertTrue($client->getDelayed(['delayed']));
+
+        $this->stopFakeWireWorker($process);
+
+        self::assertFalse($client->fetchAll());
+        self::assertNotSame(IgniteClient::RES_SUCCESS, $client->getResultCode());
+    }
+
+    public function testAppendWithEncodingKeyConfiguredFails(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('openssl extension is not available');
+        }
+
+        $client = $this->clientOnFakeIgnite();
+        self::assertTrue($client->setEncodingKey('enc-append'));
+        self::assertTrue($client->set('txt', 'mid'));
+        self::assertFalse(@$client->append('txt', 'tail'));
+        self::assertSame(IgniteClient::RES_NOTSTORED, $client->getResultCode());
+    }
+
+    public function testEncodingKeyRoundTripWhenOpenSslAvailable(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('openssl extension is not available');
+        }
+
+        $client = $this->clientOnFakeIgnite();
+        self::assertTrue($client->setEncodingKey('ignite-wire'));
+        self::assertTrue($client->set('enc', ['x' => 1]));
+        self::assertSame(['x' => 1], $client->get('enc'));
     }
 
     private function clientOnFakeIgnite(): IgniteClient

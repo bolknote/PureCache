@@ -50,6 +50,80 @@ final class ClientServerRegistryTest extends TestCase
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $core->resultCode);
     }
 
+    public function testAddServerUsesLocalhostWhenHostEmpty(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $registry = $this->registry($core);
+
+        self::assertTrue($registry->addServer('', 11211));
+        self::assertSame('localhost', $registry->getServerList()[0]['host']);
+    }
+
+    public function testAddServerRejectsNegativePort(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $registry = $this->registry($core);
+
+        self::assertFalse($registry->addServer('127.0.0.1', -1));
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $core->resultCode);
+    }
+
+    public function testAddServerRejectsInvalidConnectionString(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $registry = $this->registry($core);
+
+        self::assertFalse($registry->addServer('not-a-valid-scheme://'));
+        self::assertSame(MemcachedClient::RES_FAILURE, $core->resultCode);
+    }
+
+    public function testAddServersAcceptsListTuplesWithCredentials(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $registry = $this->registry($core);
+
+        self::assertTrue($registry->addServers([
+            ['host' => 'h', 'port' => 11211, 'weight' => 1, 'user' => 'u', 'password' => 'p', 'database' => 2],
+        ]));
+        $internal = $core->selector->getServers()[0];
+        self::assertSame('u', $internal['user'] ?? null);
+        self::assertSame('p', $internal['password'] ?? null);
+        self::assertSame(2, $internal['database'] ?? null);
+    }
+
+    public function testAddServersAcceptsNumericListTuples(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $registry = $this->registry($core);
+
+        self::assertTrue($registry->addServers([['cache', 11211, 3]]));
+        $internal = $core->selector->getServers()[0];
+        self::assertSame('cache', $internal['host']);
+        self::assertSame(11211, $internal['port']);
+        self::assertSame(3, $internal['weight']);
+    }
+
+    public function testAddServerOverridesPortAndWeightForSingleParsedUrl(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $registry = $this->registry($core);
+
+        self::assertTrue($registry->addServer('redis://cache.example.test:6379', 6380, 5));
+        $internal = $core->selector->getServers()[0];
+        self::assertSame(6380, $internal['port']);
+        self::assertSame(5, $internal['weight']);
+    }
+
+    public function testGetServerByKeyRejectsInvalidServerKey(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $registry = $this->registry($core, checkServerKey: static fn (string $key): bool => 'valid' === $key);
+        $registry->addServer('127.0.0.1', 11211);
+
+        self::assertFalse($registry->getServerByKey('not-valid'));
+        self::assertSame(MemcachedClient::RES_BAD_KEY_PROVIDED, $core->resultCode);
+    }
+
     public function testRedisClientAddServerAcceptsRedissScheme(): void
     {
         $client = new RedisClient();
@@ -57,7 +131,10 @@ final class ClientServerRegistryTest extends TestCase
         self::assertCount(1, $client->getServerList());
     }
 
-    private function registry(MemcachedClientCore $core): ClientServerRegistry
+    /**
+     * @param \Closure(string): bool|null $checkServerKey
+     */
+    private function registry(MemcachedClientCore $core, ?\Closure $checkServerKey = null): ClientServerRegistry
     {
         return new ClientServerRegistry(
             new \PureCache\Internal\ClientCoordinatorEnv(
@@ -71,11 +148,11 @@ final class ClientServerRegistryTest extends TestCase
                 static fn (int $option, bool $default): bool => $core->optionBool($option, $default),
                 static fn (string $_key): string => $_key,
                 static fn (string $_key): string => $_key,
-                static fn (string $_key): bool => true,
+                $checkServerKey ?? static fn (string $_key): bool => true,
             ),
             static function (): void {},
             static fn (): int => 11211,
-            static fn (string $_serverKey): bool => true,
+            $checkServerKey ?? static fn (string $_key): bool => true,
         );
     }
 }

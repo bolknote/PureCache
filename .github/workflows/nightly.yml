@@ -1,0 +1,35 @@
+name: Nightly full check
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  check-full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: pcov
+          tools: composer:v2
+          extensions: igbinary, msgpack, zstd, fastlz, openssl, zlib, pcov
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Install memcached and Redis
+        run: sudo apt-get update && sudo apt-get install -y memcached redis-server
+
+      - name: composer check:full
+        run: composer check:full

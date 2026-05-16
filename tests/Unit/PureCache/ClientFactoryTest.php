@@ -75,4 +75,13 @@ final class ClientFactoryTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         ClientFactory::unregister('mc');
     }
+
+    public function testPrivateConstructorIsInvokableViaReflection(): void
+    {
+        $reflection = new \ReflectionClass(ClientFactory::class);
+        $instance = $reflection->newInstanceWithoutConstructor();
+        $constructor = $reflection->getConstructor();
+        self::assertNotNull($constructor);
+        $constructor->invoke($instance);
+    }
 }

@@ -26,6 +26,54 @@ final class MemcachedClientWireTest extends TestCase
         parent::tearDown();
     }
 
+    public function testBufferedWriteFlushFailureRecordsServerError(): void
+    {
+        $port = $this->reserveEphemeralPort();
+        $process = $this->startFakeWireWorker('fake_meta_store_server.php', [
+            'FAKE_META_PORT' => (string) $port,
+        ]);
+        $this->wireWorkers[] = $process;
+
+        $client = new MemcachedClient();
+        $client->addServer('127.0.0.1', $port);
+        $client->setOption(MemcachedClient::OPT_BUFFER_WRITES, true);
+        self::assertTrue($client->set('buffered', 'payload'));
+
+        $this->stopFakeWireWorker($process);
+        $this->wireWorkers = [];
+
+        self::assertFalse($client->get('buffered'));
+        self::assertNotSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
+    }
+
+    public function testGetMultiReturnsPartialResultsWhenOneKeyIsPoisoned(): void
+    {
+        $port = $this->reserveEphemeralPort();
+        $this->wireWorkers[] = $this->startFakeWireWorker('fake_meta_store_server.php', [
+            'FAKE_META_PORT' => (string) $port,
+            'FAKE_META_GET_ERROR_PREFIX' => 'bad_',
+        ]);
+
+        $client = new MemcachedClient();
+        $client->addServer('127.0.0.1', $port);
+        self::assertTrue($client->set('good_a', 1));
+        self::assertTrue($client->set('good_b', 2));
+
+        $found = $client->getMulti(['good_a', 'bad_x', 'good_b']);
+        self::assertIsArray($found);
+        self::assertSame(['good_a' => 1, 'good_b' => 2], $found);
+        self::assertSame(MemcachedClient::RES_SOME_ERRORS, $client->getResultCode());
+    }
+
+    public function testGetMultiWithIoKeyPrefetchChunksPipeline(): void
+    {
+        $client = $this->clientOnFakeMeta();
+        $client->setOption(MemcachedClient::OPT_IO_KEY_PREFETCH, 1);
+        self::assertTrue($client->setMulti(['p1' => 1, 'p2' => 2, 'p3' => 3]));
+        $found = $client->getMulti(['p1', 'p2', 'p3']);
+        self::assertSame(['p1' => 1, 'p2' => 2, 'p3' => 3], $found);
+    }
+
     public function testSetAndGetOnFakeMetaServer(): void
     {
         $client = $this->clientOnFakeMeta();
@@ -109,6 +157,13 @@ final class MemcachedClientWireTest extends TestCase
         $client = $this->clientOnFakeMeta();
         self::assertSame(10, $client->decrement('n', 0, 10, 0));
         self::assertSame(7, $client->decrement('n', 3));
+    }
+
+    public function testSetMultiWithEmptyArraySucceeds(): void
+    {
+        $client = $this->clientOnFakeMeta();
+        self::assertTrue($client->setMulti([]));
+        self::assertSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
     }
 
     public function testSetMultiOnFakeMeta(): void
@@ -285,6 +340,14 @@ final class MemcachedClientWireTest extends TestCase
         self::assertTrue($client->deleteByKey('route', 'y'));
     }
 
+    public function testAppendWithCompressionEnabledFails(): void
+    {
+        $client = $this->clientOnFakeMeta();
+        self::assertTrue($client->set('txt', 'mid'));
+        self::assertFalse(@$client->append('txt', 'tail'));
+        self::assertSame(MemcachedClient::RES_NOTSTORED, $client->getResultCode());
+    }
+
     public function testAppendAndPrependOnFakeMeta(): void
     {
         $client = $this->clientOnFakeMeta();
@@ -303,6 +366,74 @@ final class MemcachedClientWireTest extends TestCase
         $row = $client->fetch();
         self::assertIsArray($row);
         self::assertArrayHasKey('cas', $row);
+    }
+
+    public function testTouchByKeyOnFakeMeta(): void
+    {
+        $client = $this->clientOnFakeMeta();
+        self::assertTrue($client->setByKey('route', 'touch', 'v', 30));
+        self::assertTrue($client->touchByKey('route', 'touch', 120));
+        self::assertSame('v', $client->getByKey('route', 'touch'));
+    }
+
+    public function testGetMultiPreserveOrderOnFakeMeta(): void
+    {
+        $client = $this->clientOnFakeMeta();
+        self::assertTrue($client->set('z', 3));
+        self::assertTrue($client->set('a', 1));
+        $found = $client->getMulti(['z', 'a'], MemcachedClient::GET_PRESERVE_ORDER);
+        self::assertIsArray($found);
+        self::assertSame([3, 1], array_values($found));
+    }
+
+    public function testFetchAllFailsAfterFakeServerStops(): void
+    {
+        $port = $this->reserveEphemeralPort();
+        $process = $this->startFakeWireWorker('fake_meta_store_server.php', [
+            'FAKE_META_PORT' => (string) $port,
+        ]);
+
+        $client = new MemcachedClient();
+        $client->addServer('127.0.0.1', $port);
+        self::assertTrue($client->set('delayed', 'payload'));
+        self::assertTrue($client->getDelayed(['delayed']));
+
+        $this->stopFakeWireWorker($process);
+
+        self::assertFalse($client->fetchAll());
+        self::assertNotSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
+    }
+
+    public function testSetByKeyRejectsInvalidServerKey(): void
+    {
+        $client = $this->clientOnFakeMeta();
+        self::assertFalse($client->setByKey("bad\nkey", 'k', 'v'));
+        self::assertSame(MemcachedClient::RES_BAD_KEY_PROVIDED, $client->getResultCode());
+    }
+
+    public function testAppendWithEncodingKeyConfiguredFails(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('openssl extension is not available');
+        }
+
+        $client = $this->clientOnFakeMeta();
+        self::assertTrue($client->setEncodingKey('enc-append'));
+        self::assertTrue($client->set('txt', 'mid'));
+        self::assertFalse(@$client->append('txt', 'tail'));
+        self::assertSame(MemcachedClient::RES_NOTSTORED, $client->getResultCode());
+    }
+
+    public function testEncodingKeyRoundTripWhenOpenSslAvailable(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('openssl extension is not available');
+        }
+
+        $client = $this->clientOnFakeMeta();
+        self::assertTrue($client->setEncodingKey('meta-wire'));
+        self::assertTrue($client->set('enc', ['ok' => true]));
+        self::assertSame(['ok' => true], $client->get('enc'));
     }
 
     private function clientOnFakeMeta(): MemcachedClient

@@ -45,6 +45,117 @@ final class TextProtocolClientTest extends TestCase
         fclose($server);
     }
 
+    public function testVersionReturnsRawVersionLine(): void
+    {
+        [$connection, $server] = $this->socketPair();
+        fwrite($server, "VERSION 1.6.22-fake\r\n");
+
+        self::assertSame('1.6.22-fake', TextProtocolClient::version($connection));
+        fclose($server);
+    }
+
+    public function testGetAllKeysUsesMetadumpForModernVersion(): void
+    {
+        [$connection, $server] = $this->socketPair();
+        fwrite($server, "VERSION 1.6.22\r\n");
+        fwrite($server, "OK\r\n");
+        fwrite($server, "key=foo%20bar\r\n");
+        fwrite($server, "END\r\n");
+
+        $keys = TextProtocolClient::getAllKeys($connection);
+        self::assertSame(['foo bar'], $keys);
+        fclose($server);
+    }
+
+    public function testGetAllKeysFallsBackToCachedumpWhenMetadumpBusy(): void
+    {
+        [$connection, $server] = $this->socketPair();
+        fwrite($server, "VERSION 1.6.22\r\n");
+        fwrite($server, "BUSY\r\n");
+        fwrite($server, "STAT items:1:number 1\r\n");
+        fwrite($server, "END\r\n");
+        fwrite($server, "ITEM cached-key [0 b; 0 s]\r\n");
+        fwrite($server, "END\r\n");
+
+        $keys = TextProtocolClient::getAllKeys($connection);
+        self::assertSame(['cached-key'], $keys);
+        fclose($server);
+    }
+
+    public function testGetAllKeysViaCachedumpForLegacyVersion(): void
+    {
+        [$connection, $server] = $this->socketPair();
+        fwrite($server, "VERSION 1.4\r\n");
+        fwrite($server, "STAT items:2:number 1\r\n");
+        fwrite($server, "END\r\n");
+        fwrite($server, "ITEM legacy-key [0 b; 0 s]\r\n");
+        fwrite($server, "END\r\n");
+
+        $keys = TextProtocolClient::getAllKeys($connection);
+        self::assertSame(['legacy-key'], $keys);
+        fclose($server);
+    }
+
+    public function testGetAllKeysReturnsEmptyWhenMetadumpReportsNotStarted(): void
+    {
+        [$connection, $server] = $this->socketPair();
+        fwrite($server, "VERSION 1.6.22\r\n");
+        fwrite($server, "NOTSTARTED\r\n");
+
+        self::assertSame([], TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testGetAllKeysReturnsEmptyWhenMetadumpEndsImmediately(): void
+    {
+        [$connection, $server] = $this->socketPair();
+        fwrite($server, "VERSION 1.6.22\r\n");
+        fwrite($server, "END\r\n");
+
+        self::assertSame([], TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testGetAllKeysFailsWhenMetadumpLineIsUnparseable(): void
+    {
+        [$connection, $server] = $this->socketPair();
+        fwrite($server, "VERSION 1.6.22\r\n");
+        fwrite($server, "not-a-metadump-key-line\r\n");
+        fwrite($server, "END\r\n");
+
+        self::assertFalse(TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testGetAllKeysFailsWhenCachedumpStatsReturnError(): void
+    {
+        [$connection, $server] = $this->socketPair();
+        fwrite($server, "VERSION 1.4\r\n");
+        fwrite($server, "ERROR\r\n");
+
+        self::assertFalse(TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testGetAllKeysNormalizesTwoPartVersionStrings(): void
+    {
+        [$connection, $server] = $this->socketPair();
+        fwrite($server, "VERSION 1.5-beta\r\n");
+        fwrite($server, "END\r\n");
+
+        self::assertSame([], TextProtocolClient::getAllKeys($connection));
+        fclose($server);
+    }
+
+    public function testFlushAllWithDelaySendsDelayedCommand(): void
+    {
+        [$connection, $server] = $this->socketPair();
+        fwrite($server, "OK\r\n");
+
+        self::assertTrue(TextProtocolClient::flushAll($connection, 5));
+        fclose($server);
+    }
+
     /**
      * @return array{0: StreamConnection, 1: resource}
      */

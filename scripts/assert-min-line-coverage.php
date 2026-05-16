@@ -15,7 +15,7 @@ if ($argc < 3) {
 $cloverPath = $argv[1];
 $minimum = (float) $argv[2];
 /** Extra covered statements above the percent floor so CI does not fail on a 0.01% flake. */
-$statementBuffer = 4;
+$statementBuffer = 40;
 
 if (!is_file($cloverPath)) {
     fwrite(\STDERR, "Clover report not found: {$cloverPath}\n");

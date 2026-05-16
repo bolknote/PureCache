@@ -49,5 +49,32 @@ final class IgniteClientMultiServerWireTest extends TestCase
         $stats = $client->getStats('items');
         self::assertIsArray($stats);
         self::assertCount(2, $stats);
+
+        self::assertTrue($client->setMulti(['multi-a' => 10, 'multi-b' => 20], 60));
+        self::assertSame(10, $client->get('multi-a'));
+        self::assertSame(20, $client->get('multi-b'));
+    }
+
+    public function testGetDelayedFetchAllAcrossTwoServers(): void
+    {
+        $portA = $this->reserveEphemeralPort();
+        $portB = $this->reserveEphemeralPort();
+        $this->wireWorkers[] = $this->startFakeWireWorker('fake_ignite_store_server.php', [
+            'FAKE_IGNITE_PORT' => (string) $portA,
+        ]);
+        $this->wireWorkers[] = $this->startFakeWireWorker('fake_ignite_store_server.php', [
+            'FAKE_IGNITE_PORT' => (string) $portB,
+        ]);
+
+        $client = new IgniteClient();
+        $client->addServer('127.0.0.1', $portA);
+        $client->addServer('127.0.0.1', $portB);
+
+        self::assertTrue($client->set('d1', 1));
+        self::assertTrue($client->set('d2', 2));
+        self::assertTrue($client->getDelayed(['d1', 'd2']));
+        $all = $client->fetchAll();
+        self::assertIsArray($all);
+        self::assertCount(2, $all);
     }
 }

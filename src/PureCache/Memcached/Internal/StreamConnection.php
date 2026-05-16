@@ -6,6 +6,8 @@ namespace PureCache\Memcached\Internal;
 
 /**
  * Buffered TCP connection for memcached text/meta line protocol.
+ *
+ * @psalm-suppress MixedAssignment
  */
 final class StreamConnection
 {

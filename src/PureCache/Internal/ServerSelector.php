@@ -6,6 +6,9 @@ namespace PureCache\Internal;
 
 use PureCache\MemcachedConstants;
 
+/**
+ * @psalm-suppress MixedArgument
+ */
 final class ServerSelector
 {
     /** @var list<array{host:string,port:int,weight:int,user?:string,password?:string,database?:int,tls?:bool,tls_ca_file?:string}> */
@@ -408,6 +411,8 @@ final class ServerSelector
         }
 
         usort($this->servers, static function (array $a, array $b): int {
+            /** @var array{host:string,port:int,weight:int} $a */
+            /** @var array{host:string,port:int,weight:int} $b */
             $hostCmp = strcmp($a['host'], $b['host']);
             if (0 !== $hostCmp) {
                 return $hostCmp;

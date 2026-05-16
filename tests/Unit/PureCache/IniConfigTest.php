@@ -224,6 +224,49 @@ final class IniConfigTest extends TestCase
         self::assertStringContainsString('memcached.sess_lock_wait is deprecated', $deprecated);
     }
 
+    public function testDefaultReaderReturnsNullWhenIniGetFails(): void
+    {
+        $reader = IniConfig::defaultReader();
+
+        self::assertNull($reader('memcached.__purecache_nonexistent__'));
+    }
+
+    public function testSessionPrefixAcceptsCustomValueWithinLimit(): void
+    {
+        $snapshot = IniConfig::snapshotSession($this->readerFrom([
+            'memcached.sess_prefix' => 'custom.sess.',
+        ]));
+
+        self::assertSame('custom.sess.', $snapshot['prefix']);
+    }
+
+    public function testSessionPrefixRejectsOverlongValue(): void
+    {
+        $error = $this->captureWarning(
+            fn (): array => IniConfig::snapshotSession($this->readerFrom([
+                'memcached.sess_prefix' => str_repeat('p', 219),
+            ])),
+            $snapshot,
+        );
+
+        self::assertSame(IniConfig::SESS_PREFIX_DEFAULT, $snapshot['prefix']);
+        self::assertStringContainsString('memcached.sess_prefix too long', (string) $error);
+    }
+
+    public function testBoolIniCoercesNumericStringsWhenFilterVarFails(): void
+    {
+        $snapshot = IniConfig::snapshot($this->readerFrom(['memcached.default_consistent_hash' => '2']));
+
+        self::assertTrue($snapshot['default_consistent_hash']);
+    }
+
+    public function testLongIniCoercesNonDigitStringsToInteger(): void
+    {
+        $snapshot = IniConfig::snapshot($this->readerFrom(['memcached.compression_threshold' => '12abc']));
+
+        self::assertSame(12, $snapshot['compression_threshold']);
+    }
+
     public function testSessionSaslCredentialsRoundTripThroughSnapshot(): void
     {
         $snapshot = IniConfig::snapshotSession($this->readerFrom([

@@ -8,6 +8,11 @@ use PureCache\Internal\ItemSizeGuard;
 
 /**
  * Minimal Redis TCP client (RESP2). No external Redis PHP extension — same idea as the memcached stack path.
+ *
+ * @psalm-import-type RedisReply from \PureCache\Internal\PsalmTypes
+ *
+ * @psalm-suppress MixedAssignment
+ * @psalm-suppress MixedArgumentTypeCoercion
  */
 final class NativeRedisClient implements RedisStatsBackend
 {
@@ -168,6 +173,8 @@ final class NativeRedisClient implements RedisStatsBackend
      * Low-level: argv[0] is the Redis command name (uppercase recommended).
      *
      * @param list<string> $argv
+     *
+     * @return RedisReply
      */
     public function executeRaw(array $argv): mixed
     {
@@ -184,7 +191,7 @@ final class NativeRedisClient implements RedisStatsBackend
      *
      * @param list<list<string>> $commands
      *
-     * @return list<mixed> reply per command; on per-reply failure the slot contains the thrown {@see \Throwable}
+     * @return list<RedisReply|\Throwable> reply per command; on per-reply failure the slot contains the thrown {@see \Throwable}
      */
     public function pipeline(array $commands): array
     {
@@ -222,10 +229,13 @@ final class NativeRedisClient implements RedisStatsBackend
      *
      * @param list<string> $keys
      * @param list<string> $args
+     *
+     * @return RedisReply
      */
     public function evalScript(string $script, array $keys, array $args): mixed
     {
         $sha = sha1($script);
+        /** @var list<string> $argv */
         $argv = ['EVALSHA', $sha, (string) \count($keys)];
         foreach ($keys as $k) {
             $argv[] = $k;
@@ -437,6 +447,9 @@ final class NativeRedisClient implements RedisStatsBackend
         }
     }
 
+    /**
+     * @return RedisReply
+     */
     private function readReply(): mixed
     {
         if (!\is_resource($this->stream)) {

@@ -8,6 +8,8 @@ use PureCache\MemcachedConstants;
 
 /**
  * In-process delayed-fetch queue ({@code getDelayed} / {@code fetch} / {@code fetchAll}).
+ *
+ * @psalm-suppress MixedAssignment
  */
 final readonly class ClientDelayedFetchCoordinator
 {

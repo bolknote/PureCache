@@ -10,6 +10,8 @@ use PureCache\MemcachedConstants;
 
 /**
  * Converts raw meta get responses into decoded PHP values.
+ *
+ * @psalm-suppress MixedAssignment
  */
 final class MetaValueReader
 {

@@ -205,6 +205,25 @@ jobs:
       - name: PHPUnit (Ignite integration)
         run: composer test:ignite
 
+  check-optional-ext:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: none
+          tools: composer:v2
+          extensions: igbinary, msgpack, zstd, fastlz, openssl, zlib
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Unit tests with optional extensions enabled
+        run: composer test
+
   check-php84:
     runs-on: ubuntu-latest
     steps:
@@ -235,6 +254,7 @@ jobs:
       - redis-integration
       - ignite-integration
       - check-php84
+      - check-optional-ext
     if: always()
     steps:
       - name: Require every CI job to succeed
@@ -247,3 +267,4 @@ jobs:
           test "${{ needs.redis-integration.result }}" = "success"
           test "${{ needs.ignite-integration.result }}" = "success"
           test "${{ needs.check-php84.result }}" = "success"
+          test "${{ needs.check-optional-ext.result }}" = "success"

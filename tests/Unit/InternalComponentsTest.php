@@ -52,6 +52,41 @@ final class InternalComponentsTest extends TestCase
         self::assertSame([base64_encode("binary\0key"), ' b'], KeyFormatter::encodeMetaKey("binary\0key"));
     }
 
+    public function testOptionApplierRejectsRedisOnlyTlsOptionsOnMemcachedBackend(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_TLS_CA_FILE, '/tmp/ca.pem', $this->fakeEnv());
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('Redis-backed client', $result->message ?? '');
+    }
+
+    public function testOptionApplierAcceptsLibketamaHashOption(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_LIBKETAMA_HASH, MemcachedClient::HASH_MURMUR, $this->fakeEnv());
+
+        self::assertTrue($result->ok);
+    }
+
+    public function testOptionApplierRejectsLibketamaHsiehHash(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_LIBKETAMA_HASH, MemcachedClient::HASH_HSIEH, $this->fakeEnv());
+
+        self::assertFalse($result->ok);
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $result->code);
+    }
+
+    public function testOptionApplierRejectsUnknownOptionWithInvalidArguments(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $result = ClientOptionApplier::apply($core, 9_999_999, true, $this->fakeEnv());
+
+        self::assertFalse($result->ok);
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $result->code);
+    }
+
     public function testOptionApplierRejectsUnsupportedOptionsWithoutMutatingState(): void
     {
         $core = MemcachedClientCore::createFresh();
@@ -104,6 +139,156 @@ final class InternalComponentsTest extends TestCase
 
         self::assertFalse($result->ok);
         self::assertSame(MemcachedClient::RES_BAD_KEY_PROVIDED, $result->code);
+    }
+
+    public function testOptionApplierAppliesEncodingModeAndClearsActiveContext(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('ext-openssl is not loaded');
+        }
+
+        $core = MemcachedClientCore::createFresh();
+        $core->encoding = \PureCache\Internal\EncodingContext::fromUserKey(
+            MemcachedClient::ENCODING_MODE_AEAD,
+            'encoding-mode-reset-key',
+        );
+
+        $result = ClientOptionApplier::apply(
+            $core,
+            MemcachedClient::OPT_ENCODING_MODE,
+            MemcachedClient::ENCODING_MODE_LIBMEMCACHED,
+            $this->fakeEnv(),
+        );
+
+        self::assertTrue($result->ok);
+        self::assertSame(MemcachedClient::ENCODING_MODE_LIBMEMCACHED, $core->options[MemcachedClient::OPT_ENCODING_MODE]);
+        self::assertNull($core->encoding);
+    }
+
+    public function testOptionApplierAppliesCompressionTypeAndLevel(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+
+        self::assertTrue(ClientOptionApplier::apply(
+            $core,
+            MemcachedClient::OPT_COMPRESSION_TYPE,
+            MemcachedClient::COMPRESSION_TYPE_ZSTD,
+            $this->fakeEnv(),
+        )->ok);
+        self::assertTrue(ClientOptionApplier::apply(
+            $core,
+            MemcachedClient::OPT_COMPRESSION_LEVEL,
+            5,
+            $this->fakeEnv(),
+        )->ok);
+        self::assertSame(MemcachedClient::COMPRESSION_TYPE_ZSTD, $core->options[MemcachedClient::OPT_COMPRESSION_TYPE]);
+        self::assertSame(5, $core->options[MemcachedClient::OPT_COMPRESSION_LEVEL]);
+    }
+
+    public function testOptionApplierRejectsInvalidCompressionType(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_COMPRESSION_TYPE, 99, $this->fakeEnv());
+
+        self::assertFalse($result->ok);
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $result->code);
+    }
+
+    public function testOptionApplierAppliesFailoverBooleanOptions(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+
+        self::assertTrue(ClientOptionApplier::apply(
+            $core,
+            MemcachedClient::OPT_REMOVE_FAILED_SERVERS,
+            true,
+            $this->fakeEnv(),
+        )->ok);
+        self::assertTrue(ClientOptionApplier::apply(
+            $core,
+            MemcachedClient::OPT_RANDOMIZE_REPLICA_READ,
+            true,
+            $this->fakeEnv(),
+        )->ok);
+        self::assertTrue($core->options[MemcachedClient::OPT_REMOVE_FAILED_SERVERS]);
+        self::assertTrue($core->options[MemcachedClient::OPT_RANDOMIZE_REPLICA_READ]);
+    }
+
+    public function testOptionApplierStoresUserDataOption(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $payload = ['app' => 'context'];
+
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_USER_DATA, $payload, $this->fakeEnv());
+
+        self::assertTrue($result->ok);
+        self::assertSame($payload, $core->options[MemcachedClient::OPT_USER_DATA]);
+    }
+
+    public function testOptionApplierAppliesSendTimeoutAndInvalidatesPool(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_SEND_TIMEOUT, 500, $this->fakeEnv());
+
+        self::assertTrue($result->ok);
+        self::assertSame(500, $core->options[MemcachedClient::OPT_SEND_TIMEOUT]);
+    }
+
+    public function testOptionApplierInvalidatesPoolWhenTcpKeepaliveChanges(): void
+    {
+        $invalidation = new \stdClass();
+        $invalidation->flag = false;
+
+        $env = new readonly class($this->fakeEnv(), $invalidation) implements OptionEnvironment {
+            public function __construct(
+                private OptionEnvironment $inner,
+                private \stdClass $invalidation,
+            ) {
+            }
+
+            #[\Override]
+            public function onPoolInvalidated(): void
+            {
+                $this->invalidation->flag = true;
+                $this->inner->onPoolInvalidated();
+            }
+
+            #[\Override]
+            public function onTimeoutsChanged(): void
+            {
+                $this->inner->onTimeoutsChanged();
+            }
+
+            #[\Override]
+            public function isUnsupportedOption(int $option): bool
+            {
+                return $this->inner->isUnsupportedOption($option);
+            }
+
+            #[\Override]
+            public function unsupportedOptionMessage(): string
+            {
+                return $this->inner->unsupportedOptionMessage();
+            }
+
+            #[\Override]
+            public function maxKeyLength(): int
+            {
+                return $this->inner->maxKeyLength();
+            }
+
+            #[\Override]
+            public function applyCustomOption(int $option, mixed $value, ClientCoreState $core): ?ClientOptionResult
+            {
+                return $this->inner->applyCustomOption($option, $value, $core);
+            }
+        };
+
+        $core = MemcachedClientCore::createFresh();
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_TCP_KEEPALIVE, true, $env);
+
+        self::assertTrue($result->ok);
+        self::assertTrue($invalidation->flag);
     }
 
     public function testEncodingModeOptionRequiresOpenSsl(): void
@@ -302,6 +487,32 @@ final class InternalComponentsTest extends TestCase
 
         self::assertSame('VA', $skipped->code);
         self::assertNull($skipped->value, 'expectValueBlock=false must drop the body');
+        self::assertSame('HD', $next->code);
+        fclose($server);
+    }
+
+    public function testMetaReaderRejectsOversizedVaPayload(): void
+    {
+        [$connection, $server] = $this->socketConnection("VA 8 f0 c1\r\n12345678\r\n");
+        $reader = new MetaReader($connection, 4);
+
+        $result = $reader->readOne(true);
+
+        self::assertSame(MetaReader::CODE_ITEM_TOO_BIG, $result->code);
+        self::assertSame('ITEM TOO BIG', $result->errorMessage);
+        fclose($server);
+    }
+
+    public function testMetaReaderVaWithNegativeSizeSkipsBodyRead(): void
+    {
+        [$connection, $server] = $this->socketConnection("VA -5 f0 c1\r\nHD\r\n");
+        $reader = new MetaReader($connection);
+
+        $result = $reader->readOne(true);
+        $next = $reader->readOne(false);
+
+        self::assertSame('VA', $result->code);
+        self::assertNull($result->value);
         self::assertSame('HD', $next->code);
         fclose($server);
     }

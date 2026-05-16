@@ -12,6 +12,40 @@ use PureCache\MemcachedConstants;
 
 final class ValueCodecTest extends TestCase
 {
+    public function testDecodeNeverSegfaultsOnRandomPayloads(): void
+    {
+        $this->expectNotToPerformAssertions();
+
+        for ($i = 0; $i < 64; ++$i) {
+            try {
+                ValueCodec::decode(
+                    random_bytes(random_int(1, 48)),
+                    random_int(0, 0xFFFF),
+                    MemcachedClient::SERIALIZER_PHP,
+                );
+            } catch (\Throwable) {
+            }
+        }
+    }
+
+    public function testEncodeAppliesUserFlagsWhenNonNegative(): void
+    {
+        [$payload, $flags] = ValueCodec::encode(
+            'v',
+            MemcachedClient::SERIALIZER_PHP,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            7,
+        );
+
+        self::assertNotSame(0, $flags & ValueCodec::MASK_USER);
+        self::assertSame(7, ValueCodec::getUserFlags($flags));
+        self::assertSame('v', ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP));
+    }
+
     public function testJsonArraySerializerDecodesToPhpArray(): void
     {
         $value = ['k' => ['nested' => 1]];
@@ -839,6 +873,131 @@ final class ValueCodecTest extends TestCase
         $flags = ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_ZSTD | ValueCodec::COMPRESSION_FASTLZ | ValueCodec::COMPRESSION_ZLIB;
 
         self::assertSame(MemcachedClient::COMPRESSION_ZSTD, ValueCodec::compressionKind($flags));
+    }
+
+    public function testDoubleRoundTripPreservesValueUnderNonCLocale(): void
+    {
+        $previous = setlocale(\LC_NUMERIC, '0');
+        if (!\is_string($previous)) {
+            self::markTestSkipped('setlocale unavailable');
+        }
+
+        $restored = setlocale(\LC_NUMERIC, 'de_DE.UTF-8', 'de_DE', 'deu_DE.UTF-8', 'deu_DE');
+        if (false === $restored) {
+            setlocale(\LC_NUMERIC, $previous);
+
+            self::markTestSkipped('de_DE locale not available');
+        }
+
+        try {
+            $value = 1.5;
+            [$payload, $flags] = ValueCodec::encode(
+                $value,
+                MemcachedClient::SERIALIZER_PHP,
+                false,
+                MemcachedClient::COMPRESSION_ZLIB,
+                3,
+                2000,
+                1.30,
+                -1,
+            );
+
+            self::assertSame($value, ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP));
+        } finally {
+            setlocale(\LC_NUMERIC, $previous);
+        }
+    }
+
+    public function testIgbinaryUnserializeOptionsSupportIsCached(): void
+    {
+        $method = new \ReflectionMethod(ValueCodec::class, 'igbinaryAcceptsUnserializeOptions');
+
+        $first = $method->invoke(null);
+        $second = $method->invoke(null);
+
+        self::assertSame($first, $second);
+        self::assertIsBool($first);
+    }
+
+    public function testCompressPayloadZstdFailureThrowsWhenExtensionReturnsFalse(): void
+    {
+        if (!\function_exists('zstd_compress')) {
+            self::markTestSkipped('zstd is not available');
+        }
+
+        $method = new \ReflectionMethod(ValueCodec::class, 'compressPayload');
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('zstd compress failed');
+        $method->invoke(null, str_repeat('x', 100), MemcachedClient::COMPRESSION_ZSTD, 99);
+    }
+
+    public function testDecompressPayloadZlibFailureThrowsOnGarbage(): void
+    {
+        $method = new \ReflectionMethod(ValueCodec::class, 'decompressPayload');
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('zlib decompress failed');
+        $method->invoke(null, 'not-zlib', MemcachedClient::COMPRESSION_ZLIB);
+    }
+
+    public function testJsonSerializerRoundTrip(): void
+    {
+        $value = (object) ['k' => 'v', 'n' => 2];
+
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_JSON,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+        );
+
+        $decoded = ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_JSON);
+        self::assertSame(json_encode($value), json_encode($decoded));
+    }
+
+    public function testDecodeEncryptedPayloadWithoutContextFails(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('openssl is not available');
+        }
+
+        $ctx = EncodingContext::fromUserKey(MemcachedConstants::ENCODING_MODE_AEAD, 'key');
+        self::assertNotNull($ctx);
+        [$payload, $flags] = ValueCodec::encode(
+            'secret',
+            MemcachedClient::SERIALIZER_PHP,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+            $ctx,
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('no matching encoding key');
+        ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP);
+    }
+
+    public function testRandomGarbageDecodeDoesNotCrash(): void
+    {
+        $failures = 0;
+        for ($i = 0; $i < 32; ++$i) {
+            $payload = random_bytes(random_int(1, 64));
+            $flags = ValueCodec::TYPE_SERIALIZED | ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_ZLIB;
+
+            try {
+                ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP);
+            } catch (\RuntimeException) {
+                ++$failures;
+            }
+        }
+
+        self::assertSame(32, $failures);
     }
 
     private function borderlineCompressiblePayload(): string

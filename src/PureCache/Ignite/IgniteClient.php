@@ -33,6 +33,8 @@ use PureCache\Internal\ValueCodec;
  *  - `append`/`prepend` and `increment`/`decrement` use the same operator in
  *    a short optimistic retry loop because Ignite has no scriptable atomic
  *    arithmetic equivalent to the Redis Lua scripts.
+ *
+ * @psalm-suppress MixedAssignment
  *  - TTL is enforced lazily: every {@see readEntry()} checks {@code expireAt}
  *    against the wall clock and treats stale entries as a miss, best-effort
  *    deleting them so capacity gets reclaimed. {@code touch()} rewrites the
@@ -158,6 +160,7 @@ final class IgniteClient extends AbstractCacheClient
     protected function doGetMulti(array $keys, ?string $serverKey, int $getFlags): array|false
     {
         try {
+            /** @var array<string, mixed> $found */
             $found = [];
             foreach ($this->readEntriesBatched($keys, $serverKey) as [$orig, $entry]) {
                 $found[$orig] = $this->valueForGetFlags($entry, $getFlags);

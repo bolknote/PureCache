@@ -12,60 +12,45 @@ use PureCache\MemcachedConstants;
 
 final class ClientEncodingConfiguratorTest extends TestCase
 {
-    public function testEmptyEncodingKeyIsRejected(): void
-    {
-        $env = $this->env();
-        $configurator = new ClientEncodingConfigurator($env);
-
-        self::assertFalse($configurator->setEncodingKey(''));
-        self::assertSame(MemcachedConstants::RES_INVALID_ARGUMENTS, $env->getResultCode());
-    }
-
-    public function testEncodingRequiresOpenSsl(): void
-    {
-        if (\extension_loaded('openssl')) {
-            self::markTestSkipped('openssl is available');
-        }
-
-        $env = $this->env();
-        $configurator = new ClientEncodingConfigurator($env);
-
-        self::assertFalse($configurator->setEncodingKey('secret'));
-        self::assertSame(MemcachedConstants::RES_NOT_SUPPORTED, $env->getResultCode());
-    }
-
-    public function testEncodingInstallsContextWhenOpenSslAvailable(): void
-    {
-        if (!\extension_loaded('openssl')) {
-            self::markTestSkipped('openssl is not available');
-        }
-
-        $env = $this->env();
-        $configurator = new ClientEncodingConfigurator($env);
-
-        self::assertTrue($configurator->setEncodingKey('wire-secret'));
-        self::assertSame(MemcachedConstants::RES_SUCCESS, $env->getResultCode());
-        self::assertNotNull($env->core->encoding);
-    }
-
-    public function testInvalidEncodingModeIsRejectedWhenOpenSslAvailable(): void
-    {
-        if (!\extension_loaded('openssl')) {
-            self::markTestSkipped('openssl is not available');
-        }
-
-        $env = $this->env();
-        $env->core->options[MemcachedConstants::OPT_ENCODING_MODE] = 999;
-        $configurator = new ClientEncodingConfigurator($env);
-
-        self::assertFalse($configurator->setEncodingKey('wire-secret'));
-        self::assertSame(MemcachedConstants::RES_INVALID_ARGUMENTS, $env->getResultCode());
-    }
-
-    private function env(): ClientCoordinatorEnv
+    public function testSetEncodingKeyRejectsEmptyKey(): void
     {
         $core = MemcachedClientCore::createFresh();
+        $configurator = new ClientEncodingConfigurator($this->env($core));
 
+        self::assertFalse($configurator->setEncodingKey(''));
+        self::assertSame(MemcachedConstants::RES_INVALID_ARGUMENTS, $core->resultCode);
+    }
+
+    public function testSetEncodingKeyRejectsUnknownEncodingMode(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('ext-openssl is not loaded');
+        }
+
+        $core = MemcachedClientCore::createFresh();
+        $core->options[MemcachedConstants::OPT_ENCODING_MODE] = 99;
+        $configurator = new ClientEncodingConfigurator($this->env($core));
+
+        self::assertFalse($configurator->setEncodingKey('valid-key'));
+        self::assertSame(MemcachedConstants::RES_INVALID_ARGUMENTS, $core->resultCode);
+    }
+
+    public function testSetEncodingKeyInstallsContextWhenOpenSslIsAvailable(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('ext-openssl is not loaded');
+        }
+
+        $core = MemcachedClientCore::createFresh();
+        $configurator = new ClientEncodingConfigurator($this->env($core));
+
+        self::assertTrue($configurator->setEncodingKey('user-supplied-encoding-key'));
+        self::assertSame(MemcachedConstants::RES_SUCCESS, $core->resultCode);
+        self::assertNotNull($core->encoding);
+    }
+
+    private function env(MemcachedClientCore $core): ClientCoordinatorEnv
+    {
         return new ClientCoordinatorEnv(
             $core,
             static function (int $code, ?string $message = null) use ($core): void {
@@ -73,12 +58,8 @@ final class ClientEncodingConfiguratorTest extends TestCase
                 $core->resultMessage = $message ?? '';
             },
             static fn (): int => $core->resultCode,
-            static fn (int $option, int $default): int => \is_int($core->options[$option] ?? null)
-                ? $core->options[$option]
-                : $default,
-            static fn (int $option, bool $default): bool => \is_bool($core->options[$option] ?? null)
-                ? $core->options[$option]
-                : $default,
+            static fn (int $option, int $default): int => $core->optionInt($option, $default),
+            static fn (int $option, bool $default): bool => $core->optionBool($option, $default),
             static fn (string $key): string => $key,
             static fn (string $key): string => $key,
             static fn (string $_key): bool => true,

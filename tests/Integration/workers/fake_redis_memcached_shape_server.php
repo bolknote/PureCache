@@ -381,6 +381,13 @@ function bumpCas(string $current): string
  */
 function writeHgetallReply($client, string $key, array $store): void
 {
+    $poison = getenv('FAKE_REDIS_HGETALL_ERROR_SUBSTR');
+    if (false !== $poison && '' !== $poison && str_contains($key, $poison)) {
+        writeErrorReply($client, 'ERR poisoned hgetall');
+
+        return;
+    }
+
     if (!isset($store[$key])) {
         fwrite($client, "*0\r\n");
 

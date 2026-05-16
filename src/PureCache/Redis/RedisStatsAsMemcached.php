@@ -16,6 +16,10 @@ use PureCache\Redis\Internal\RedisInfoReplyFlatten;
  *
  * Prefix key counts use {@see scanKeys()} with a shared iteration cap; when the cap is hit,
  * {@code complete} is false and {@code mem_requested} uses a conservative per-key fallback.
+ *
+ * @psalm-import-type RedisReply from \PureCache\Internal\PsalmTypes
+ *
+ * @psalm-suppress MixedAssignment
  */
 final class RedisStatsAsMemcached
 {

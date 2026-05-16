@@ -434,14 +434,12 @@ final class MemcachedClientStateTest extends TestCase
     }
 
     /**
-     * PECL's OPT_LIBKETAMA_HASH is a read-alias of OPT_HASH: it never
-     * stores its own value, and the getter always reports whatever
-     * OPT_HASH currently is — including the MD5 cascade triggered by
-     * OPT_LIBKETAMA_COMPATIBLE=true and the value left behind by direct
-     * OPT_HASH writes. Pinning the contract here keeps the AbstractCacheClient
-     * read-alias intact against accidental refactors.
+     * PECL surfaces {@code OPT_LIBKETAMA_HASH} via libmemcached's separate
+     * {@code MEMCACHED_BEHAVIOR_KETAMA_HASH} dial. It tracks {@code OPT_HASH}
+     * only on a fresh client and after the {@code OPT_LIBKETAMA_COMPATIBLE}
+     * cascade — direct {@code OPT_HASH} writes do not move the ketama getter.
      */
-    public function testLibketamaHashGetterReadAliasesOptHash(): void
+    public function testLibketamaHashGetterTracksOptHashAcrossCascade(): void
     {
         $client = new MemcachedClient();
 
@@ -451,7 +449,8 @@ final class MemcachedClientStateTest extends TestCase
         );
 
         self::assertTrue($client->setOption(MemcachedClient::OPT_HASH, MemcachedClient::HASH_CRC));
-        self::assertSame(MemcachedClient::HASH_CRC, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
+        self::assertSame(MemcachedClient::HASH_CRC, $client->getOption(MemcachedClient::OPT_HASH));
+        self::assertSame(MemcachedClient::HASH_DEFAULT, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
 
         self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE, true));
         self::assertSame(MemcachedClient::HASH_MD5, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
@@ -488,8 +487,8 @@ final class MemcachedClientStateTest extends TestCase
      * PECL routes OPT_LIBKETAMA_HASH through {@code zval_get_long()} →
      * libmemcached → hashkit. Hashkit accepts every coerced long except
      * HASH_HSIEH (PECL builds without HAVE_HSIEH_HASH), and the dial
-     * never visibly mutates state — the getter still tracks OPT_HASH and
-     * routing is unchanged. Mirror that no-op-success contract so callers
+     * never visibly mutates state — the getter still reports the ketama
+     * default and routing is unchanged. Mirror that no-op-success contract so callers
      * porting from ext-memcached see identical setOption returns.
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('libketamaHashAcceptedValues')]
@@ -503,7 +502,7 @@ final class MemcachedClientStateTest extends TestCase
         self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, $value));
         self::assertSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
         self::assertSame(MemcachedClient::HASH_MURMUR, $client->getOption(MemcachedClient::OPT_HASH));
-        self::assertSame(MemcachedClient::HASH_MURMUR, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
+        self::assertSame(MemcachedClient::HASH_DEFAULT, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
     }
 
     /**

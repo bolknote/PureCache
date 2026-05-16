@@ -6,6 +6,8 @@ namespace PureCache\Internal;
 
 /**
  * Lazy coordinator graph for {@see \PureCache\AbstractCacheClient}.
+ *
+ * @psalm-suppress MixedArgumentTypeCoercion
  */
 final class ClientCoordinatorRegistry
 {
@@ -160,7 +162,15 @@ final class ClientCoordinatorRegistry
             $this->routing(),
             $this->binding->flushNetworkWrites,
             $this->binding->doGet,
-            fn (callable $cacheCb, string $key, ?string $serverKey, int $getFlags): mixed => $this->cacheCallback()->invoke($cacheCb, $key, $serverKey, $getFlags),
+            fn (callable $cacheCb, string $key, ?string $serverKey, int $getFlags): mixed => $this->cacheCallback()->invoke(
+                /*
+                 * @param callable(\PureCache\CacheClient, string, mixed, int, float): bool $cacheCb
+                 */
+                $cacheCb,
+                $key,
+                $serverKey,
+                $getFlags,
+            ),
         );
     }
 

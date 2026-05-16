@@ -26,7 +26,19 @@ final class ClientInputCoercionTest extends TestCase
     public function testNormalizeCacheCbExpirationCoercesNumericStrings(): void
     {
         self::assertSame(90, ClientInputCoercion::normalizeCacheCbExpiration('90'));
+        self::assertSame(90, ClientInputCoercion::normalizeCacheCbExpiration(90.0));
         self::assertSame(0, ClientInputCoercion::normalizeCacheCbExpiration(['bad']));
+    }
+
+    public function testCoerceStringAcceptsNull(): void
+    {
+        self::assertSame('', ClientInputCoercion::coerceString(null));
+    }
+
+    public function testCoerceIntAcceptsFloatAndBool(): void
+    {
+        self::assertSame(3, ClientInputCoercion::coerceInt(3.9));
+        self::assertSame(1, ClientInputCoercion::coerceInt(true));
     }
 
     public function testBucketMapValuesAreValid(): void

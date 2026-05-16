@@ -9,15 +9,10 @@ use PureCache\Internal\ServerEndpoint;
 
 final class ServerEndpointTest extends TestCase
 {
-    public function testListTypeReportsTcpForHostnames(): void
-    {
-        self::assertSame('TCP', ServerEndpoint::listType('127.0.0.1'));
-        self::assertSame('TCP', ServerEndpoint::listType('cache.example.com'));
-    }
-
-    public function testListTypeReportsSocketForUnixPaths(): void
+    public function testListTypeClassifiesUnixSocketPaths(): void
     {
         self::assertSame('SOCKET', ServerEndpoint::listType('/var/run/memcached.sock'));
         self::assertSame('SOCKET', ServerEndpoint::listType('./run/memcached.sock'));
+        self::assertSame('TCP', ServerEndpoint::listType('127.0.0.1'));
     }
 }

@@ -13,6 +13,9 @@ use PureCache\MemcachedConstants;
  *
  * The applier itself owns no protocol code, so the same implementation drives both
  * the Memcached text-protocol client and the Redis-backed adapter.
+ *
+ * @psalm-suppress MixedAssignment
+ * @psalm-suppress MixedPropertyTypeCoercion
  */
 final class ClientOptionApplier
 {
@@ -126,11 +129,13 @@ final class ClientOptionApplier
             $core->selector->setHashOption(MemcachedConstants::HASH_MD5);
             $core->options[MemcachedConstants::OPT_DISTRIBUTION] = MemcachedConstants::DISTRIBUTION_CONSISTENT;
             $core->options[MemcachedConstants::OPT_HASH] = MemcachedConstants::HASH_MD5;
+            $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = MemcachedConstants::HASH_MD5;
         } else {
             $core->selector->setDistribution(MemcachedConstants::DISTRIBUTION_MODULA);
             $core->selector->setHashOption(MemcachedConstants::HASH_DEFAULT);
             $core->options[MemcachedConstants::OPT_DISTRIBUTION] = MemcachedConstants::DISTRIBUTION_MODULA;
             $core->options[MemcachedConstants::OPT_HASH] = MemcachedConstants::HASH_DEFAULT;
+            $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = MemcachedConstants::HASH_DEFAULT;
         }
     }
 
@@ -180,10 +185,9 @@ final class ClientOptionApplier
      *     PECL builds without ({@code HAVE_HSIEH_HASH=disabled}) and the
      *     hashkit setter therefore rejects with {@code INVALID_ARGUMENT}.
      *
-     * Empirically the dial does not move keys around (the getter
-     * read-aliases {@code OPT_HASH} via
-     * {@see \PureCache\AbstractCacheClient::getOption()} and routing is
-     * driven by {@code OPT_HASH}). PureCache mirrors that contract:
+     * Empirically the dial does not move keys around ({@code getOption()} reads
+     * libmemcached's separate {@code MEMCACHED_BEHAVIOR_KETAMA_HASH} state, not
+     * {@code OPT_HASH}; routing is driven by {@code OPT_HASH}). PureCache mirrors that contract:
      * coerce through {@see ClientOptions::peclLongValue()}, reject HSIEH,
      * return success for everything else with no observable state change.
      */

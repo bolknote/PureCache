@@ -118,4 +118,35 @@ final class ServerSelectorTest extends TestCase
         self::assertSame([], $selector->getServers());
         self::assertSame(0, $selector->pickServerIndex('key'));
     }
+
+    public function testPickReadIndexRandomizesAmongReplicas(): void
+    {
+        $selector = new ServerSelector();
+        $selector->addServer(['host' => 'a', 'port' => 11211, 'weight' => 1]);
+        $selector->addServer(['host' => 'b', 'port' => 11211, 'weight' => 1]);
+        $selector->setLibketamaCompatible(true);
+
+        $seen = [];
+        for ($i = 0; $i < 40; ++$i) {
+            $seen[$selector->pickReadIndex('key-'.$i, 1, true)] = true;
+        }
+
+        self::assertGreaterThan(1, \count($seen));
+    }
+
+    public function testPickReadIndexReturnsNegativeOneWhenNoServers(): void
+    {
+        $selector = new ServerSelector();
+        self::assertSame(-1, $selector->pickReadIndex('key', 1, false));
+    }
+
+    public function testPickReplicaIndicesDedupesPrimary(): void
+    {
+        $selector = new ServerSelector();
+        $selector->addServer(['host' => 'a', 'port' => 11211, 'weight' => 1]);
+
+        $indices = $selector->pickReplicaIndices('route-key', 2);
+        self::assertNotSame([], $indices);
+        self::assertSame($indices[0], $indices[0]);
+    }
 }

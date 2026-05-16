@@ -136,6 +136,7 @@ final class ConnectionStringParser
 
         if (isset($parts['query']) && '' !== $parts['query']) {
             parse_str($parts['query'], $query);
+            /** @var array<string, string> $query */
             $caFile = $query['cafile'] ?? $query['tls_ca_file'] ?? null;
             if (\is_string($caFile) && '' !== $caFile) {
                 $entry['tls_ca_file'] = rawurldecode($caFile);

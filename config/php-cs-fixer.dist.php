@@ -37,5 +37,7 @@ return (new PhpCsFixer\Config())
         ],
         'php_unit_test_case_static_method_calls' => ['call_type' => 'self'],
         'php_unit_strict' => true,
+        // Keep /** @psalm-suppress and /** @var */ docblocks; phpdoc_to_comment breaks Psalm.
+        'phpdoc_to_comment' => false,
     ])
     ->setFinder($finder);

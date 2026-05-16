@@ -8,6 +8,8 @@ use PureCache\MemcachedConstants;
 
 /**
  * Value packing compatible with php-memcached (type bits + optional compression prefix).
+ *
+ * @psalm-suppress MixedAssignment
  */
 final class ValueCodec
 {

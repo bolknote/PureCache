@@ -48,4 +48,23 @@ final class RedisTlsOptionsTest extends TestCase
         self::assertSame(RedisClient::RES_NOT_SUPPORTED, $client->getResultCode());
         self::assertStringContainsString('not supported', $client->getResultMessage());
     }
+
+    public function testInvalidTlsCaFileTypeIsRejected(): void
+    {
+        $client = new RedisClient();
+        self::assertTrue($client->addServers([
+            ['host' => 'secure.example.test', 'port' => 6380, 'weight' => 0, 'tls' => true],
+        ]));
+
+        self::assertFalse($client->setOption(RedisClient::OPT_TLS_CA_FILE, ['not-a-path']));
+        self::assertSame(RedisClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+    }
+
+    public function testInvalidTlsPeerNameTypeIsRejected(): void
+    {
+        $client = new RedisClient();
+
+        self::assertFalse($client->setOption(RedisClient::OPT_TLS_PEER_NAME, ['not', 'a', 'host']));
+        self::assertSame(RedisClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+    }
 }

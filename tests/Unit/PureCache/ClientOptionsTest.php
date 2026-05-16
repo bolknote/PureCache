@@ -22,9 +22,21 @@ use PureCache\Redis\RedisClient;
  */
 final class ClientOptionsTest extends TestCase
 {
+    public function testStringValueMapsNullToEmptyString(): void
+    {
+        self::assertSame('', ClientOptions::stringValue(null));
+    }
+
+    public function testStringValueRejectsNonScalarValues(): void
+    {
+        self::assertNull(ClientOptions::stringValue(['not', 'scalar']));
+    }
+
     public function testDefaultSerializerFollowsPeclPrecedence(): void
     {
         $expected = match (true) {
+            \extension_loaded('memcached') && \Memcached::HAVE_IGBINARY => MemcachedConstants::SERIALIZER_IGBINARY,
+            \extension_loaded('memcached') && \Memcached::HAVE_MSGPACK => MemcachedConstants::SERIALIZER_MSGPACK,
             \extension_loaded('igbinary') => MemcachedConstants::SERIALIZER_IGBINARY,
             \extension_loaded('msgpack') => MemcachedConstants::SERIALIZER_MSGPACK,
             default => MemcachedConstants::SERIALIZER_PHP,
@@ -166,20 +178,23 @@ final class ClientOptionsTest extends TestCase
     /**
      * OPT_LIBKETAMA_HASH parity lives entirely in shared infrastructure
      * ({@see \PureCache\Internal\ClientOptionApplier::applyLibketamaHash()}
-     * for the setter and the read-alias in
-     * {@see \PureCache\AbstractCacheClient::getOption()}). The
-     * cross-backend test makes that invariant explicit: if any backend
-     * ever overrides the dial via {@code applyCustomOption()} or shadows
-     * the getter, this test catches it before parity tests against
-     * ext-memcached do.
+     * for the setter and the separate {@code OPT_LIBKETAMA_HASH} slot in
+     * {@see ClientOptions::defaults()}). On a fresh
+     * client both dials start at {@code HASH_DEFAULT}; the cross-backend test
+     * makes that invariant explicit before parity tests against ext-memcached.
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('allBackendClients')]
     public function testLibketamaHashContractIsConsistentAcrossBackends(CacheClient $client): void
     {
         self::assertSame(
+            MemcachedConstants::HASH_DEFAULT,
+            $client->getOption(MemcachedConstants::OPT_LIBKETAMA_HASH),
+            'fresh OPT_LIBKETAMA_HASH must match libmemcached ketama default',
+        );
+        self::assertSame(
             $client->getOption(MemcachedConstants::OPT_HASH),
             $client->getOption(MemcachedConstants::OPT_LIBKETAMA_HASH),
-            'OPT_LIBKETAMA_HASH must read-alias OPT_HASH on every backend',
+            'fresh OPT_LIBKETAMA_HASH must equal default OPT_HASH',
         );
 
         self::assertTrue($client->setOption(MemcachedConstants::OPT_LIBKETAMA_HASH, MemcachedConstants::HASH_MURMUR));

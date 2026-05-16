@@ -26,6 +26,44 @@ final class RedisClientWireTest extends TestCase
         parent::tearDown();
     }
 
+    public function testFetchAllFailsWhenPipelineHitsPoisonedKey(): void
+    {
+        $port = $this->reserveEphemeralPort();
+        $this->wireWorkers[] = $this->startFakeWireWorker('fake_redis_memcached_shape_server.php', [
+            'FAKE_REDIS_PORT' => (string) $port,
+            'FAKE_REDIS_HGETALL_ERROR_SUBSTR' => 'bad_seed',
+        ]);
+
+        $client = new RedisClient();
+        $client->addServer('127.0.0.1', $port);
+        self::assertTrue($client->set('ok', 1));
+        self::assertTrue($client->set('bad_seed', 2));
+        self::assertTrue($client->getDelayed(['ok', 'bad_seed']));
+        self::assertFalse($client->fetchAll());
+        self::assertNotSame(RedisClient::RES_SUCCESS, $client->getResultCode());
+    }
+
+    public function testSetByKeyRejectsInvalidServerKey(): void
+    {
+        $client = $this->clientOnFakeRedis();
+        self::assertFalse($client->setByKey("bad\rkey", 'k', 'v'));
+        self::assertSame(RedisClient::RES_BAD_KEY_PROVIDED, $client->getResultCode());
+    }
+
+    public function testSetMultiWithEmptyArraySucceeds(): void
+    {
+        $client = $this->clientOnFakeRedis();
+        self::assertTrue($client->setMulti([]));
+        self::assertSame(RedisClient::RES_SUCCESS, $client->getResultCode());
+    }
+
+    public function testSetMultiWithInvalidKeySetsBadKeyProvided(): void
+    {
+        $client = $this->clientOnFakeRedis();
+        self::assertFalse($client->setMulti(['valid' => 1, '' => 2]));
+        self::assertSame(RedisClient::RES_BAD_KEY_PROVIDED, $client->getResultCode());
+    }
+
     public function testSetAndGetRoundTripOnFakeRedis(): void
     {
         $client = $this->clientOnFakeRedis();
@@ -171,6 +209,14 @@ final class RedisClientWireTest extends TestCase
         $client = $this->clientOnFakeRedis();
         self::assertTrue($client->setByKey('route', 'key', 'val'));
         self::assertSame('val', $client->getByKey('route', 'key'));
+    }
+
+    public function testAppendWithCompressionEnabledFails(): void
+    {
+        $client = $this->clientOnFakeRedis();
+        self::assertTrue($client->set('txt', 'mid'));
+        self::assertFalse(@$client->append('txt', 'x'));
+        self::assertSame(RedisClient::RES_NOTSTORED, $client->getResultCode());
     }
 
     public function testAppendAndPrependOnFakeRedis(): void
@@ -340,6 +386,28 @@ final class RedisClientWireTest extends TestCase
         self::assertIsArray($client->fetchAll());
     }
 
+    public function testNegativeIncrementOffsetIsRejected(): void
+    {
+        $client = $this->clientOnFakeRedis();
+        self::assertFalse(@$client->increment('n', -1));
+        self::assertSame(RedisClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
+    }
+
+    public function testFlushDelayIsNotSupportedOnFakeRedis(): void
+    {
+        $client = $this->clientOnFakeRedis();
+        self::assertFalse($client->flush(5));
+        self::assertSame(RedisClient::RES_NOT_SUPPORTED, $client->getResultCode());
+        self::assertStringContainsString('flush delay', $client->getResultMessage());
+    }
+
+    public function testGetStatsSettingsTypeOnFakeRedis(): void
+    {
+        $client = $this->clientOnFakeRedis();
+        self::assertTrue($client->set('settings_probe', 1));
+        self::assertIsArray($client->getStats('settings'));
+    }
+
     public function testAddServerViaRedisUrlOnFakeRedis(): void
     {
         $port = $this->reserveEphemeralPort();
@@ -351,6 +419,46 @@ final class RedisClientWireTest extends TestCase
         self::assertTrue($client->addServer('redis://127.0.0.1:'.$port.'/0'));
         self::assertTrue($client->set('url_key', 'v'));
         self::assertSame('v', $client->get('url_key'));
+    }
+
+    public function testTouchByKeyOnFakeRedis(): void
+    {
+        $client = $this->clientOnFakeRedis();
+        self::assertTrue($client->setByKey('route', 'touch', 'v', 30));
+        self::assertTrue($client->touchByKey('route', 'touch', 120));
+        self::assertSame('v', $client->getByKey('route', 'touch'));
+    }
+
+    public function testResetServerListOnFakeRedis(): void
+    {
+        $client = $this->clientOnFakeRedis();
+        $port = $client->getServerList()[0]['port'];
+        self::assertTrue($client->resetServerList());
+        self::assertTrue($client->addServer('127.0.0.1', $port));
+        self::assertTrue($client->set('after-reset', 2));
+    }
+
+    public function testGetMultiPreserveOrderOnFakeRedis(): void
+    {
+        $client = $this->clientOnFakeRedis();
+        self::assertTrue($client->set('z', 3));
+        self::assertTrue($client->set('a', 1));
+        $found = $client->getMulti(['z', 'a'], RedisClient::GET_PRESERVE_ORDER);
+        self::assertIsArray($found);
+        self::assertSame([3, 1], array_values($found));
+    }
+
+    public function testAppendWithEncodingKeyConfiguredFails(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('openssl extension is not available');
+        }
+
+        $client = $this->clientOnFakeRedis();
+        self::assertTrue($client->setEncodingKey('enc-append'));
+        self::assertTrue($client->set('txt', 'mid'));
+        self::assertFalse(@$client->append('txt', 'tail'));
+        self::assertSame(RedisClient::RES_NOTSTORED, $client->getResultCode());
     }
 
     private function clientOnFakeRedis(): RedisClient

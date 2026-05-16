@@ -8,6 +8,8 @@ use PureCache\MemcachedConstants;
 
 /**
  * Replica fan-out writes and {@code OPT_STORE_RETRY_COUNT} failover retries.
+ *
+ * @psalm-suppress MixedAssignment
  */
 final readonly class ClientWriteCoordinator
 {

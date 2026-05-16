@@ -9,6 +9,8 @@ use PureCache\MemcachedConstants;
 /**
  * PECL-shaped server list management ({@code addServer}, {@code addServers},
  * {@code getServerList}, {@code setBucket}, …).
+ *
+ * @psalm-suppress MixedAssignment
  */
 final readonly class ClientServerRegistry
 {

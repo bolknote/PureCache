@@ -165,6 +165,38 @@ final class NativeRedisClientReplyParserTest extends TestCase
         }
     }
 
+    public function testInfoOldFormatIsParsed(): void
+    {
+        $client = new NativeRedisClient('127.0.0.1', 0);
+        $stream = $this->attachReadSide($client);
+
+        $body = "redis_version:7.0.0\r\nuptime_in_seconds:10\r\n";
+        fwrite($stream, '$'.\strlen($body)."\r\n".$body."\r\n");
+
+        try {
+            $info = $client->info();
+            self::assertSame('7.0.0', $info['redis_version'] ?? null);
+        } finally {
+            $this->detachStream($client, $stream);
+        }
+    }
+
+    public function testScanReturnsEmptyKeysForMalformedArrayTail(): void
+    {
+        $client = new NativeRedisClient('127.0.0.1', 0);
+        $stream = $this->attachReadSide($client);
+
+        fwrite($stream, "*1\r\n:0\r\n");
+
+        try {
+            [$cursor, $keys] = $client->scan(0, []);
+            self::assertSame(0, $cursor);
+            self::assertSame([], $keys);
+        } finally {
+            $this->detachStream($client, $stream);
+        }
+    }
+
     public function testNestedArrayReplyIsParsed(): void
     {
         $client = new NativeRedisClient('127.0.0.1', 0);
