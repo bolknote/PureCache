@@ -76,6 +76,16 @@ final class InternalComponentsTest extends TestCase
         self::assertSame(MemcachedClient::HASH_MD5, $core->options[MemcachedClient::OPT_HASH]);
     }
 
+    public function testOptionApplierRejectsNonStringPrefixValues(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_PREFIX_KEY, ['not-a-string'], $this->fakeEnv());
+
+        self::assertFalse($result->ok);
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $result->code);
+    }
+
     public function testOptionApplierRejectsNonIntegerSelectorValues(): void
     {
         $core = MemcachedClientCore::createFresh();

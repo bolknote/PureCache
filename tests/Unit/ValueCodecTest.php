@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace PureCache\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use PureCache\Internal\EncodingContext;
 use PureCache\Internal\ValueCodec;
 use PureCache\Memcached\MemcachedClient;
+use PureCache\MemcachedConstants;
 
 final class ValueCodecTest extends TestCase
 {
@@ -243,6 +245,84 @@ final class ValueCodecTest extends TestCase
                 setlocale(\LC_NUMERIC, $previous);
             }
         }
+    }
+
+    public function testDecodeDoubleHonoursLocaleWhenNumericLocaleIsNotC(): void
+    {
+        $previous = setlocale(\LC_NUMERIC, '0');
+
+        try {
+            $applied = setlocale(\LC_NUMERIC, 'de_DE.UTF-8', 'de_DE', 'German_Germany.UTF-8');
+            if (false === $applied) {
+                self::markTestSkipped('de_DE locale not available on this host');
+            }
+
+            self::assertSame(2.5, ValueCodec::decode('2.5', ValueCodec::TYPE_DOUBLE, MemcachedClient::SERIALIZER_PHP));
+        } finally {
+            if (\is_string($previous)) {
+                setlocale(\LC_NUMERIC, $previous);
+            }
+        }
+    }
+
+    public function testHasAeadEncryptionReflectsInternalFlagBit(): void
+    {
+        self::assertFalse(ValueCodec::hasAeadEncryption(0));
+        self::assertTrue(ValueCodec::hasAeadEncryption(ValueCodec::ENCRYPTED_AEAD));
+    }
+
+    public function testDecodeRejectsAeadPayloadWithoutEncodingContext(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('openssl is not available');
+        }
+
+        $ctx = EncodingContext::fromUserKey(MemcachedConstants::ENCODING_MODE_AEAD, 'aead-secret');
+        self::assertNotNull($ctx);
+
+        [$payload, $flags] = ValueCodec::encode(
+            'plain',
+            MemcachedClient::SERIALIZER_PHP,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+            $ctx,
+        );
+
+        self::assertTrue(ValueCodec::hasAeadEncryption($flags));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('encrypted payload (AEAD) but no matching encoding key configured');
+
+        ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP);
+    }
+
+    public function testLibmemcachedEncryptedArrayStripsTrailingNullPaddingOnDecode(): void
+    {
+        if (!\extension_loaded('openssl')) {
+            self::markTestSkipped('openssl is not available');
+        }
+
+        $ctx = EncodingContext::fromUserKey(MemcachedConstants::ENCODING_MODE_LIBMEMCACHED, 'wire-secret');
+        self::assertNotNull($ctx);
+
+        $value = ['nested' => [1, 2, 3]];
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_PHP,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+            $ctx,
+        );
+
+        self::assertSame($value, ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP, false, $ctx));
     }
 
     public function testPhpSerializedRoundTrip(): void

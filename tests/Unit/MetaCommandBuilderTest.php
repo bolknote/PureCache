@@ -73,6 +73,11 @@ final class MetaCommandBuilderTest extends TestCase
         self::assertSame('mg '.base64_encode("ses\x00ion")." T0 b\r\n", $cmd);
     }
 
+    public function testMetaGetTouchHonoursNoReplyFlag(): void
+    {
+        self::assertSame("mg session T60 q\r\n", MetaCommandBuilder::metaGetTouch('session', '60', true));
+    }
+
     public function testMetaStoreEmitsLengthFlagsAndPayloadCrlf(): void
     {
         $payload = "hello\r\nworld";

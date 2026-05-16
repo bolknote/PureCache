@@ -67,6 +67,7 @@ final class ConnectionStringParserTest extends TestCase
     {
         self::assertSame([], ConnectionStringParser::parseServers(''));
         self::assertSame([], ConnectionStringParser::parseServers('   '));
+        self::assertSame([], ConnectionStringParser::parseServers('  ,  ,  '));
     }
 
     public function testParsesRedisUrlWithoutAuthOrDatabase(): void

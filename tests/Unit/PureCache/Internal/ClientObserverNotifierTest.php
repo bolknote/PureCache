@@ -35,4 +35,29 @@ final class ClientObserverNotifierTest extends TestCase
 
         self::assertSame(['op:get:16:k'], $observer->events);
     }
+
+    public function testNotifyItemTooBigIsNoOpWithoutObserver(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        self::assertNull($core->observer);
+
+        ClientObserverNotifier::notifyItemTooBig($core, 'k', 512);
+
+        self::assertNull($core->observer);
+    }
+
+    public function testNotifyOperationFailureIsNoOpWithoutObserver(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        self::assertNull($core->observer);
+
+        ClientObserverNotifier::notifyOperationFailure(
+            $core,
+            'get',
+            MemcachedConstants::RES_FAILURE,
+            'k',
+        );
+
+        self::assertNull($core->observer);
+    }
 }

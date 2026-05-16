@@ -52,6 +52,41 @@ final class ClientWriteCoordinatorTest extends TestCase
         self::assertSame(MemcachedConstants::RES_SUCCESS, $core->resultCode);
     }
 
+    public function testRetryStoreRestoresFailureCodeAfterRetryThrowable(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+        $core->selector->addServer(['host' => 'a', 'port' => 11211, 'weight' => 1]);
+        $core->selector->addServer(['host' => 'b', 'port' => 11211, 'weight' => 1]);
+        $core->options[MemcachedClient::OPT_STORE_RETRY_COUNT] = 2;
+
+        $env = $this->env($core);
+        $write = new ClientWriteCoordinator(
+            $env,
+            new ClientRoutingCoordinator($env),
+            new ClientHealthRecorder($env),
+        );
+
+        $calls = 0;
+        self::assertFalse($write->retryStoreOnFailure(
+            null,
+            'k',
+            static function () use (&$calls, $core): bool {
+                ++$calls;
+                if (1 === $calls) {
+                    $core->resultCode = MemcachedConstants::RES_FAILURE;
+                    $core->resultMessage = 'primary failed';
+
+                    return false;
+                }
+
+                throw new \RuntimeException('retry down');
+            },
+        ));
+        self::assertGreaterThanOrEqual(2, $calls);
+        self::assertSame(MemcachedConstants::RES_FAILURE, $core->resultCode);
+        self::assertSame('primary failed', $core->resultMessage);
+    }
+
     public function testWriteFanoutReturnsNoServersWhenPoolIsEmpty(): void
     {
         $core = MemcachedClientCore::createFresh();
