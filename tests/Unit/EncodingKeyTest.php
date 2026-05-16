@@ -347,9 +347,12 @@ final class EncodingKeyTest extends TestCase
             $ctx,
         );
 
-        $tampered = substr_replace($payload, "\x00", -1, 1);
+        // Tamper the GCM auth tag (bytes 12–27), not ciphertext tail — last-byte
+        // replace is a no-op when that byte is already 0x00.
+        $tampered = substr_replace($payload, $payload[12] ^ "\x01", 12, 1);
 
         $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('tag mismatch');
         ValueCodec::decode($tampered, $flags, MemcachedClient::SERIALIZER_PHP, false, $ctx);
     }
 
