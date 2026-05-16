@@ -22,29 +22,11 @@ jobs:
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist
 
-      - name: PHPUnit coverage (unit, minimum line coverage)
+      - name: Line coverage gate
         run: composer test:coverage
 
-      - name: PHPStan
-        run: vendor/bin/phpstan analyse --no-progress --configuration=config/phpstan.neon
-
-      - name: Psalm
-        run: composer psalm
-
-      - name: Psalm (level 1, src only)
-        run: composer psalm:level1
-
-      - name: PHP-CS-Fixer (dry run)
-        run: vendor/bin/php-cs-fixer fix --dry-run --diff --config=config/php-cs-fixer.dist.php
-
-      - name: Rector (dry run)
-        run: vendor/bin/rector process --dry-run --no-progress-bar --config=config/rector.php
-
-      - name: PHPUnit (unit)
-        run: composer test
-
-      - name: PHPUnit (unit, no optional extensions)
-        run: composer test:no-opt-ext
+      - name: Static analysis, style, and unit tests
+        run: composer check
 
   mutation:
     runs-on: ubuntu-latest
@@ -240,7 +222,28 @@ jobs:
         run: composer install --no-interaction --prefer-dist
 
       - name: Static analysis and unit tests (PHP 8.4)
+        run: composer check
+
+  all-green:
+    runs-on: ubuntu-latest
+    needs:
+      - check
+      - mutation
+      - memcached-integration
+      - contract
+      - memcached-parity
+      - redis-integration
+      - ignite-integration
+      - check-php84
+    if: always()
+    steps:
+      - name: Require every CI job to succeed
         run: |
-          vendor/bin/phpstan analyse --no-progress --configuration=config/phpstan.neon
-          composer psalm
-          composer test
+          test "${{ needs.check.result }}" = "success"
+          test "${{ needs.mutation.result }}" = "success"
+          test "${{ needs.memcached-integration.result }}" = "success"
+          test "${{ needs.contract.result }}" = "success"
+          test "${{ needs.memcached-parity.result }}" = "success"
+          test "${{ needs.redis-integration.result }}" = "success"
+          test "${{ needs.ignite-integration.result }}" = "success"
+          test "${{ needs.check-php84.result }}" = "success"

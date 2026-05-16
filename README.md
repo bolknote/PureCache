@@ -284,9 +284,9 @@ PHPStan and Psalm both cover `src/`, `tests/`, and `bootstrap-alias.php` (see `c
 | --- | --- |
 | PHPStan | **level 10**, strict rules, empty baseline |
 | Psalm | **error level 2** on `src/` + `tests/`; **level 1** pass on `src/` via `config/psalm-level1.xml` (backend wire + codec mixed-value paths are narrowly suppressed) |
-| PHPUnit | 850+ unit tests (in-process fake TCP workers for memcached meta, Redis RESP, Ignite thin-client); memcached / Redis / Ignite integration + contract suites |
+| PHPUnit | 870+ unit tests (in-process fake TCP workers for memcached meta, Redis RESP, Ignite thin-client); memcached / Redis / Ignite integration + contract suites |
 | Coverage | **≥ 86%** line coverage on `src/PureCache` (`composer test:coverage`; fake TCP workers for meta/Redis/Ignite wire paths) |
-| Infection | MSI ≥ 80%, covered MSI ≥ 85% (`composer test:mutation`) |
+| Infection | MSI ≥ 90%, covered MSI ≥ 95% (`composer test:mutation`) |
 
 A full local gate matches CI expectations:
 
