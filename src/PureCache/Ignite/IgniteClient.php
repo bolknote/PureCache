@@ -10,6 +10,7 @@ use PureCache\Ignite\Internal\IgniteCommandResultMapper;
 use PureCache\Ignite\Internal\IgniteTransportException;
 use PureCache\Internal\CacheEntry;
 use PureCache\Internal\Expiration;
+use PureCache\Internal\ItemSizeGuard;
 use PureCache\Internal\PersistentStateRegistry;
 use PureCache\Internal\StoreMode;
 use PureCache\Internal\ValueCodec;
@@ -54,8 +55,11 @@ final class IgniteClient extends AbstractCacheClient
 
     public const string CACHE_NAME = 'PURECACHE_V1';
 
-    /** Optimistic-retry limit used by append/prepend and incr/decr loops. */
-    private const int ATOMIC_RETRY_LIMIT = 5;
+    /**
+     * Optimistic-retry limit for append/prepend and incr/decr
+     * ({@code OP_CACHE_REPLACE_IF_EQUALS} loops).
+     */
+    public const int ATOMIC_RETRY_LIMIT = 48;
 
     #[\Override]
     protected function createState(?string $persistentId): IgniteClientState
@@ -133,12 +137,8 @@ final class IgniteClient extends AbstractCacheClient
         return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($getFlags): mixed {
             $entry = $this->readEntry($pk, $idx);
             if (!$entry instanceof CacheEntry) {
-                // {@see readEntry()} sets RES_PAYLOAD_FAILURE when the value
-                // codec rejects a hit (e.g. decryption/auth-tag mismatch);
-                // RES_NOTFOUND would mask the crypto error as a plain miss.
-                if (self::RES_PAYLOAD_FAILURE !== $this->getResultCode()) {
-                    $this->setResult(self::RES_NOTFOUND);
-                }
+                // {@see materializeEntry()} sets RES_PAYLOAD_FAILURE / RES_E2BIG.
+                $this->applyMissUnlessReadFailure();
 
                 return false;
             }
@@ -785,10 +785,24 @@ final class IgniteClient extends AbstractCacheClient
 
     private function readEntry(string $pk, int $serverIndex): ?CacheEntry
     {
-        $client = $this->clientFor($serverIndex);
-        $cacheId = $this->cacheIdFor($serverIndex);
+        try {
+            $client = $this->clientFor($serverIndex);
+            $cacheId = $this->cacheIdFor($serverIndex);
+            $bytes = $client->cacheGet($cacheId, $pk);
+        } catch (IgniteTransportException $igniteTransportException) {
+            $this->applyIgniteFailure($igniteTransportException);
 
-        $bytes = $client->cacheGet($cacheId, $pk);
+            return null;
+        } catch (\RuntimeException $runtimeException) {
+            if ($this->optionInt(self::OPT_ITEM_SIZE_LIMIT, 0) > 0) {
+                $this->setResult(self::RES_E2BIG, $runtimeException->getMessage());
+
+                return null;
+            }
+
+            throw $runtimeException;
+        }
+
         if (null === $bytes) {
             return null;
         }
@@ -805,12 +819,24 @@ final class IgniteClient extends AbstractCacheClient
      */
     private function materializeEntry(string $bytes, string $pk, NativeIgniteClient $client, int $cacheId): ?CacheEntry
     {
+        if (ItemSizeGuard::exceedsReadLimit(\strlen($bytes), 0)) {
+            $this->setResult(self::RES_E2BIG);
+
+            return null;
+        }
+
         $decoded = IgniteCacheCodec::decodeWrapper($bytes);
         if (null === $decoded) {
             return null;
         }
 
         [$cas, $flags, $expireAt, $payload] = $decoded;
+        if (ItemSizeGuard::exceedsReadLimit(\strlen($payload), $this->optionInt(self::OPT_ITEM_SIZE_LIMIT, 0))) {
+            $this->setResult(self::RES_E2BIG);
+
+            return null;
+        }
+
         if ($this->isExpired($expireAt)) {
             $this->bestEffortRemove($client, $cacheId, $pk);
 
@@ -847,7 +873,18 @@ final class IgniteClient extends AbstractCacheClient
             throw new \RuntimeException('invalid server index');
         }
 
-        $client = new NativeIgniteClient($server['host'], $server['port'], $this->recvSendTimeoutSeconds());
+        // Wire frames must be allowed up to {@see ItemSizeGuard::ABSOLUTE_MAX_BYTES};
+        // {@see materializeEntry()} enforces {@code OPT_ITEM_SIZE_LIMIT} on the
+        // decoded payload. Tying maxFrameBytes to the option would reject GET
+        // responses whose wrapper legitimately exceeds the read limit before we
+        // can surface {@code RES_E2BIG}, and breaks setMulti partial success
+        // (successful small items could not be read back).
+        $client = new NativeIgniteClient(
+            $server['host'],
+            $server['port'],
+            $this->recvSendTimeoutSeconds(),
+            ItemSizeGuard::ABSOLUTE_MAX_BYTES,
+        );
         $client->connect();
         $st->clientByServerIndex[$serverIndex] = $client;
 

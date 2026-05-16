@@ -159,7 +159,7 @@ Per-instance directives (read on every `new MemcachedClient()`):
 | `memcached.compression_threshold` | `2000` | `ClientCoreState::$compressionThreshold` (not exposed via `setOption()` in PECL either) | Values smaller than the threshold are never compressed even when `OPT_COMPRESSION = true`. |
 | `memcached.compression_factor` | `1.3` | `ClientCoreState::$compressionFactor` (INI-only in PECL) | Compressed payload is only kept when `plain_len > compressed_len * factor`. |
 | `memcached.store_retry_count` | `0` | `OPT_STORE_RETRY_COUNT` | On a primary `RES_FAILURE` (write threw, connection broke, …) the client retries the write onto another live server up to this many times. Applies to `set`/`add`/`replace`/`cas` across every backend; non-failure outcomes (`RES_NOTSTORED`, `RES_DATA_EXISTS`, `RES_E2BIG`, …) are surfaced verbatim — same as libmemcached. |
-| `memcached.item_size_limit` | `0` | `OPT_ITEM_SIZE_LIMIT` | Pre-network check that mirrors PECL's `RES_E2BIG`. |
+| `memcached.item_size_limit` | `0` | `OPT_ITEM_SIZE_LIMIT` | When `> 0`, rejects oversize payloads on **write and read** with `RES_E2BIG` (reads also enforce a 64 MiB absolute wire ceiling when unset). |
 | `memcached.default_consistent_hash` | `Off` | `OPT_DISTRIBUTION = DISTRIBUTION_CONSISTENT` when On | Applied via the same code path PECL uses (`memcached_behavior_set(DISTRIBUTION_CONSISTENT)`). |
 | `memcached.default_binary_protocol` | `Off` | `OPT_BINARY_PROTOCOL` (write-through), warning emitted when On | Pure-PHP transport speaks the meta protocol only; the warning matches PECL's `failed to set memcached behavior` shape. |
 | `memcached.default_connect_timeout` | `0` | `OPT_CONNECT_TIMEOUT` | Applied only when non-zero, mirroring PECL. |
@@ -221,17 +221,27 @@ If you want to supply your own backend (different host, custom `OPT_*` configura
 - `OPT_RECV_TIMEOUT` / `OPT_SEND_TIMEOUT` are interpreted as **milliseconds** (same as the memcached client) and applied as Redis read/write timeouts in **seconds** on the socket.
 - TTLs respect the memcached convention: values up to `60 * 60 * 24 * 30` (30 days) are relative seconds; anything larger is treated as an absolute Unix timestamp and converted to a relative TTL on the wire.
 - `increment()` / `decrement()` accept an `initial_value` and `expiry`. When the key is missing, the Lua script atomically seeds it with the initial counter value (typed as a long) and applies the expiry, matching PECL's `increment_with_initial` semantics.
-- Authentication is configured through the connection string or `addServer()`. Pass `redis://user:password@host:port/db` (or `rediss://…` for TLS-style URLs); host/port-only entries continue to work. Username and password are sent via `AUTH`, and an optional database index is selected with `SELECT` during the handshake.
+- Authentication is configured through the connection string or `addServer()`. Pass `redis://user:password@host:port/db` for plain TCP, or `rediss://…` for **TLS** (`ssl://` with peer verification; default port `6380` when omitted). Append `?cafile=/path/to/ca.pem` (or `tls_ca_file=`) on `rediss://` URLs, pass `tls_ca_file` in the server array from `addServer()`, or set `RedisClient::OPT_TLS_CA_FILE` on an existing pool (Redis-only). Override certificate hostname checks with `RedisClient::OPT_TLS_PEER_NAME` when the TCP endpoint is an IP or load-balancer front-end. When the TCP target is `127.0.0.1` / `::1` and no override is set, TLS peer verification uses `localhost` so local fixtures with `CN=localhost` work. Host/port-only entries continue to work. Username and password are sent via `AUTH`, and an optional database index is selected with `SELECT` during the handshake. Integration tests against self-signed certs pass `tls_ca_file` in the server array (see `RedisIntegrationTest::testRedissConnectionStringUsesTls`).
 
 ## Apache Ignite backend notes
 
 - Speaks the Apache Ignite **thin-client binary protocol v1.2.0** over plain TCP (default port 10800). No third-party Ignite PHP package is required.
 - All entries live in a single Ignite cache (`PURECACHE_V1`), automatically created on first use via `OP_CACHE_GET_OR_CREATE_WITH_NAME`. Each entry is a `byte[]` whose first 24 bytes are a little-endian header — 63-bit CAS token, F-flags, `expireAt` (absolute Unix timestamp; `0` = never expires), payload length — followed by the same serialized payload bytes the memcached/Redis backends store. Ignite's thin client has no per-key TTL opcode, so expiry lives in this wrapper instead of a server-side TTL field.
 - CAS is kept inside that header — it is **not** the Ignite entry version. `cas($token, …)` compares the stored wrapper and commits the new one atomically through `OP_CACHE_REPLACE_IF_EQUALS`, so the check-and-set is one server round-trip without a leaked race window.
-- TTL follows the same memcached rules as the other backends on `set` / `setMulti` (≤30 days → relative seconds, larger values → absolute Unix timestamp), stored as `expireAt` in the wrapper. Expiration is enforced lazily on read: stale entries are treated as `RES_NOTFOUND` and best-effort removed. `touch($key, $exp)` rewrites `expireAt` while preserving CAS. `append` / `prepend` and `increment` / `decrement` preserve the existing `expireAt` and use a short optimistic `REPLACE_IF_EQUALS` retry loop (Ignite has no scriptable server-side equivalent of Redis Lua).
+- TTL follows the same memcached rules as the other backends on `set` / `setMulti` (≤30 days → relative seconds, larger values → absolute Unix timestamp), stored as `expireAt` in the wrapper. Expiration is enforced lazily on read: stale entries are treated as `RES_NOTFOUND` and best-effort removed. `touch($key, $exp)` rewrites `expireAt` while preserving CAS. `append` / `prepend` and `increment` / `decrement` preserve the existing `expireAt` and use an optimistic `REPLACE_IF_EQUALS` retry loop (up to **`IgniteClient::ATOMIC_RETRY_LIMIT`** attempts per call, currently 48). Under heavy parallel counter traffic, expect `RES_NOTSTORED` when every retry loses the race.
 - `addServer()` endpoints are treated as independent shards, identically to the Redis backend. For a real Ignite cluster, register one endpoint and let the cluster handle partitioning.
 - `flush($delay > 0)` returns `RES_NOT_SUPPORTED` (`flush delay not supported on Ignite`); `flush(0)` clears the cache via `OP_CACHE_CLEAR`.
 - `setSaslAuthData()` returns `RES_NOT_SUPPORTED` (no binary SASL handshake on the thin client). `setEncodingKey()` works the same as on every other backend — encryption happens client-side in the value codec before each `OP_CACHE_PUT` and after each `OP_CACHE_GET`, so the encoded payload is opaque to the server.
+
+## Production and safety
+
+These APIs are safe to use in production when configured deliberately:
+
+- **`OPT_ITEM_SIZE_LIMIT`** — set a byte budget that applies to **writes and reads**. Values stored while the limit is `0` (unlimited) can still be rejected on a later `get` after you lower the limit. Reads always enforce a **64 MiB** wire ceiling even when the option is `0`, so a hostile or buggy peer cannot force multi-gigabyte allocations.
+- **`SERIALIZER_PHP` / `SERIALIZER_IGBINARY`** — leave `OPT_ALLOW_SERIALIZED_CLASSES` off unless you fully trust every writer to the pool. See [Security note: PHP-serialized objects](#security-note-php-serialized-objects) below.
+- **`getAllKeys()`** — **do not run in production** on large pools. It walks every shard (`lru_crawler metadump`, `stats cachedump`, Redis `SCAN`, or Ignite cache scans), can block servers, and returns best-effort partial results (`RES_SOME_ERRORS`) when a shard refuses. Use metrics, key namespaces, or an application index instead.
+- **Session locking** — with `memcached.sess_locking = On`, only one PHP worker holds `lock.{sid}` at a time. Size `memcached.sess_lock_wait_*` and `memcached.sess_lock_retries` for your PHP-FPM concurrency; otherwise parallel requests for the same session ID fail `read()` with a user warning.
+- **Multi-process PHP** — CAS, counters, and session locks are exercised under parallel workers in the integration suite; application code must still handle `RES_DATA_EXISTS` / `RES_NOTSTORED` like any PECL client.
 
 ## Backend differences
 
@@ -242,7 +252,7 @@ places where backend semantics diverge in observable ways.
 | --- | --- | --- | --- |
 | Default port | `11211` | `6379` | `10800` |
 | Max key length | 250 B (protocol-mandated) | 65 536 B | 65 536 B |
-| Connection-string forms | `host:port`, `host:port:weight` | `host[:port]`, `redis://[user:pass@]host:port[/db]`, `rediss://...` (auth via `AUTH`, db via `SELECT`) | `host[:port]` |
+| Connection-string forms | `host:port`, `host:port:weight` | `host[:port]`, `redis://[user:pass@]host:port[/db]`, `rediss://...` (TLS + `AUTH` + optional `SELECT`) | `host[:port]` |
 | Multi-server endpoints | true client-side sharding (Ketama / modula) | independent shards via the same `ServerSelector`; for Redis Cluster register a single endpoint | independent shards; for an Ignite cluster register one endpoint and let the server-side partitioner do the work |
 | TTL semantics on `set` / `setMulti` | ≤30 days → relative seconds, >30 days → absolute Unix ts | same as memcached (normalized client-side before `EVAL`) | same conversion rules; stored as absolute `expireAt` in the 24-byte wrapper and enforced lazily on read (no Ignite server TTL opcode) |
 | `touch($key, $exp)` | sets new TTL via meta `mt`/`mg` semantics | sets new TTL atomically via Lua | rewrites `expireAt` in the wrapper (CAS preserved) via optimistic `REPLACE_IF_EQUALS`; stale/missing keys → `RES_NOTFOUND` |
@@ -268,12 +278,23 @@ attribute parity gaps to the right backend.
 
 ## Static analysis
 
-PHPStan and Psalm both cover `src/`, `tests/`, and `bootstrap-alias.php` (see `config/phpstan.neon` and `config/psalm.xml`). A full local gate matches CI expectations:
+PHPStan and Psalm both cover `src/`, `tests/`, and `bootstrap-alias.php` (see `config/phpstan.neon` and `config/psalm.xml`). Quality gates in CI:
+
+| Tool | Setting |
+| --- | --- |
+| PHPStan | **level 10**, strict rules, empty baseline |
+| Psalm | **error level 2** on `src/` + `tests/`; **level 1** pass on `src/` via `config/psalm-level1.xml` (backend wire + codec mixed-value paths are narrowly suppressed) |
+| PHPUnit | 850+ unit tests (in-process fake TCP workers for memcached meta, Redis RESP, Ignite thin-client); memcached / Redis / Ignite integration + contract suites |
+| Coverage | **≥ 86%** line coverage on `src/PureCache` (`composer test:coverage`; fake TCP workers for meta/Redis/Ignite wire paths) |
+| Infection | MSI ≥ 80%, covered MSI ≥ 85% (`composer test:mutation`) |
+
+A full local gate matches CI expectations:
 
 ```bash
-composer phpstan
-composer psalm
-composer check   # phpstan + psalm + style/rector dry-runs + unit tests (with and without optional extensions)
+composer check                 # phpstan + psalm + psalm:level1 + cs/rector + unit tests (with and without optional extensions)
+composer test:integration:all  # memcached + redis + ignite integration (starts local servers when needed)
+composer test:contract         # cross-backend contract tests (memcached, redis, ignite)
+composer check:full            # check + coverage gate + integration:all + contract + mutation testing
 ```
 
 Psalm stores its cache under `cache/psalm/` (the whole `cache/` tree is git-ignored).
@@ -292,7 +313,27 @@ To run tests against a real memcached server, use the wrapper: it starts memcach
 
 ```bash
 composer test:integration
+composer test:integration:all   # memcached + redis + ignite (see also test:redis, test:ignite)
 ```
+
+Cross-backend contract tests (add/replace/delete limits, prefix, flush delay semantics) run on every client via:
+
+```bash
+composer test:contract
+```
+
+`addServer()` accepts URL-shaped hosts (`redis://…`, `rediss://…?cafile=…`) the same way as the constructor `connection_str` argument. Optional production hooks:
+
+```php
+$client->setClientObserver(new class implements \PureCache\Internal\ClientObserver {
+    public function onServerFailure(int $serverIndex, string $host, int $port, \Throwable $throwable): void { /* … */ }
+    public function onServerRecovered(int $serverIndex, string $host, int $port): void { /* … */ }
+    public function onItemTooBig(?string $key, int $bytes): void { /* RES_E2BIG */ }
+    public function onOperationFailure(string $operation, int $resultCode, ?string $key): void { /* … */ }
+});
+```
+
+Local throughput probe (not a CI gate): `php tools/bench.php memcached 127.0.0.1 11211`.
 
 Set `MEMCACHED_BINARY=/path/to/memcached` if `memcached` is not on `PATH`.
 
@@ -373,7 +414,7 @@ PECL `Memcached` does not pin `allowed_classes`, so applications that rely on th
 $client->setOption(MemcachedClient::OPT_ALLOW_SERIALIZED_CLASSES, true);
 ```
 
-When enabled, PHP-serialized values are read with `allowed_classes = true` for full PECL parity. `SERIALIZER_IGBINARY` is unaffected — it does not expose an `allowed_classes` toggle.
+When enabled, PHP-serialized values are read with `allowed_classes = true` for full PECL parity. `SERIALIZER_IGBINARY` honors the same toggle when `igbinary_unserialize()` accepts an options array; otherwise object payloads are rejected instead of being rehydrated.
 
 ### Compression notes
 

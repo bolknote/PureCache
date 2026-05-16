@@ -16,14 +16,14 @@ final class IgniteReply
     /** Maximum payload size for a single length-prefixed protocol frame. */
     public const int MAX_FRAME_BYTES = 67_108_864;
 
-    public static function assertFrameLength(int $length): void
+    public static function assertFrameLength(int $length, int $maxBytes = self::MAX_FRAME_BYTES): void
     {
         if ($length < 0) {
             throw IgniteTransportException::frameLengthInvalid();
         }
 
-        if ($length > self::MAX_FRAME_BYTES) {
-            throw IgniteTransportException::frameLengthExceeded($length, self::MAX_FRAME_BYTES);
+        if ($length > $maxBytes) {
+            throw IgniteTransportException::frameLengthExceeded($length, $maxBytes);
         }
     }
 

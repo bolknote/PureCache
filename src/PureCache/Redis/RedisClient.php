@@ -6,7 +6,11 @@ namespace PureCache\Redis;
 
 use PureCache\AbstractCacheClient;
 use PureCache\Internal\CacheEntry;
+use PureCache\Internal\ClientCoreState;
+use PureCache\Internal\ClientOptionResult;
+use PureCache\Internal\ClientOptions;
 use PureCache\Internal\Expiration;
+use PureCache\Internal\ItemSizeGuard;
 use PureCache\Internal\KeyFormatter;
 use PureCache\Internal\PersistentStateRegistry;
 use PureCache\Internal\StoreMode;
@@ -107,6 +111,49 @@ final class RedisClient extends AbstractCacheClient
     }
 
     #[\Override]
+    public function applyCustomOption(int $option, mixed $value, ClientCoreState $core): ?ClientOptionResult
+    {
+        if (self::OPT_TLS_CA_FILE === $option) {
+            $path = ClientOptions::stringValue($value);
+            if (null === $path) {
+                return ClientOptionResult::failure(
+                    self::RES_INVALID_ARGUMENTS,
+                    'OPT_TLS_CA_FILE expects a filesystem path string',
+                );
+            }
+
+            $this->patchTlsServers($core, static function (array $server) use ($path): array {
+                if (isset($server['tls']) && true === $server['tls']) {
+                    $server['tls_ca_file'] = $path;
+                }
+
+                return $server;
+            });
+            $core->options[self::OPT_TLS_CA_FILE] = $path;
+            $this->onPoolInvalidated();
+
+            return ClientOptionResult::success();
+        }
+
+        if (self::OPT_TLS_PEER_NAME === $option) {
+            $peer = ClientOptions::stringValue($value);
+            if (null === $peer) {
+                return ClientOptionResult::failure(
+                    self::RES_INVALID_ARGUMENTS,
+                    'OPT_TLS_PEER_NAME expects a hostname string',
+                );
+            }
+
+            $core->options[self::OPT_TLS_PEER_NAME] = $peer;
+            $this->onPoolInvalidated();
+
+            return ClientOptionResult::success();
+        }
+
+        return parent::applyCustomOption($option, $value, $core);
+    }
+
+    #[\Override]
     protected function flushNetworkWrites(): void
     {
         $this->flushWriteBuffer();
@@ -127,13 +174,9 @@ final class RedisClient extends AbstractCacheClient
         return $this->executeKeyed($key, $serverKey, function (int $idx, string $pk) use ($getFlags): mixed {
             $entry = $this->readEntry($pk, $idx);
             if (!$entry instanceof CacheEntry) {
-                // {@see cacheEntryFromHash()} already sets RES_PAYLOAD_FAILURE
-                // when decryption/deserialization throws; we mustn't overwrite
-                // that with RES_NOTFOUND, otherwise crypto misconfigurations
-                // would look like ordinary cache misses to the caller.
-                if (self::RES_PAYLOAD_FAILURE !== $this->getResultCode()) {
-                    $this->setResult(self::RES_NOTFOUND);
-                }
+                // {@see cacheEntryFromHash()} sets RES_PAYLOAD_FAILURE / RES_E2BIG;
+                // do not downgrade those to RES_NOTFOUND.
+                $this->applyMissUnlessReadFailure();
 
                 return false;
             }
@@ -775,9 +818,25 @@ final class RedisClient extends AbstractCacheClient
     private function readEntry(string $pk, int $serverIndex): ?CacheEntry
     {
         $rk = $this->itemRedisKey($pk);
-        $h = $this->redisForServerIndex($serverIndex)->hgetall($rk);
+        try {
+            $h = $this->redisForServerIndex($serverIndex)->hgetall($rk);
+        } catch (RedisCommandException $redisCommandException) {
+            if ($this->isItemSizeLimitException($redisCommandException)) {
+                $this->setResult(self::RES_E2BIG);
+
+                return null;
+            }
+
+            throw $redisCommandException;
+        }
 
         return $this->cacheEntryFromHash($h);
+    }
+
+    private function isItemSizeLimitException(\Throwable $throwable): bool
+    {
+        return $throwable instanceof RedisCommandException
+            && str_contains($throwable->getMessage(), 'item size limit');
     }
 
     /**
@@ -803,6 +862,13 @@ final class RedisClient extends AbstractCacheClient
         $out = [];
         foreach ($replies as $reply) {
             if ($reply instanceof \Throwable) {
+                if ($this->isItemSizeLimitException($reply)) {
+                    $this->setResult(self::RES_E2BIG);
+                    $out[] = null;
+
+                    continue;
+                }
+
                 throw $reply;
             }
 
@@ -839,6 +905,12 @@ final class RedisClient extends AbstractCacheClient
     private function cacheEntryFromHash(array $h): ?CacheEntry
     {
         if (!isset($h['d'], $h['f'], $h['c']) || !is_numeric($h['f'])) {
+            return null;
+        }
+
+        if (ItemSizeGuard::exceedsReadLimit(\strlen($h['d']), $this->optionInt(self::OPT_ITEM_SIZE_LIMIT, 0))) {
+            $this->setResult(self::RES_E2BIG);
+
             return null;
         }
 
@@ -884,6 +956,9 @@ final class RedisClient extends AbstractCacheClient
             throw new \RuntimeException('invalid server index');
         }
 
+        $configured = $this->core->options[self::OPT_TLS_PEER_NAME] ?? null;
+        $peerName = \is_string($configured) && '' !== $configured ? $configured : null;
+
         $redis = new NativeRedisClient(
             $server['host'],
             $server['port'],
@@ -891,6 +966,10 @@ final class RedisClient extends AbstractCacheClient
             $server['user'] ?? null,
             $server['password'] ?? null,
             $server['database'] ?? null,
+            ItemSizeGuard::effectiveReadLimit($this->optionInt(self::OPT_ITEM_SIZE_LIMIT, 0)),
+            isset($server['tls']) && $server['tls'],
+            $server['tls_ca_file'] ?? null,
+            $peerName,
         );
         $redis->connect();
         $st->redisByServerIndex[$serverIndex] = $redis;
@@ -1040,6 +1119,22 @@ final class RedisClient extends AbstractCacheClient
     /**
      * @return callable(NativeRedisClient):void
      */
+    /** @param \Closure(array<string, mixed>): array<string, mixed> $mutator */
+    private function patchTlsServers(ClientCoreState $core, \Closure $mutator): void
+    {
+        $patched = [];
+        foreach ($core->selector->getServers() as $server) {
+            /** @var array{host:string,port:int,weight:int,user?:string,password?:string,database?:int,tls?:bool,tls_ca_file?:string} $updated */
+            $updated = $mutator($server);
+            $patched[] = $updated;
+        }
+
+        $core->selector->reset();
+        foreach ($patched as $server) {
+            $core->selector->addServer($server);
+        }
+    }
+
     private function makeAddClosure(string $rk, string $payload, int $flags, ?int $ttl): callable
     {
         return static function (NativeRedisClient $r) use ($rk, $payload, $flags, $ttl): void {

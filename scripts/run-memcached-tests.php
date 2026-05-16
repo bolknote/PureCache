@@ -113,7 +113,21 @@ if (!is_array($env)) {
 $env['MEMCACHED_TEST_HOST'] = MEMCACHED_HOST;
 $env['MEMCACHED_TEST_PORT'] = (string) $port;
 
-exit(runProcess($testCommand, __DIR__.'/..', $env));
+$code = runProcess($testCommand, __DIR__.'/..', $env);
+if (0 !== $code) {
+    exit($code);
+}
+
+$wireCommand = array_merge(
+    phpCommandPrefix('tests/Integration/WireSizeLimitIntegrationTest.php'),
+    [
+        $phpunit,
+        '--configuration=config/phpunit.xml',
+        'tests/Integration/WireSizeLimitIntegrationTest.php',
+    ],
+);
+
+exit(runProcess($wireCommand, __DIR__.'/..', $env));
 
 function findMemcachedBinary(): ?string
 {

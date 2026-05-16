@@ -16,14 +16,15 @@ namespace PureCache\Internal;
  *   - {@code redis://host[:port][/db]}
  *   - {@code redis://:password@host[:port][/db]}
  *   - {@code redis://user:password@host[:port][/db]}
+ *   - {@code rediss://…} — same fields plus {@code tls: true} (TLS via {@code ssl://})
  *
- * Those return the optional {@code user}, {@code password} and {@code database}
- * fields which Memcached-only backends safely ignore.
+ * Those return the optional {@code user}, {@code password}, {@code database}, and
+ * {@code tls} fields which Memcached-only backends safely ignore.
  */
 final class ConnectionStringParser
 {
     /**
-     * @return list<array{host:string,port:int,weight:int,user?:string,password?:string,database?:int}>
+     * @return list<array{host:string,port:int,weight:int,user?:string,password?:string,database?:int,tls?:bool,tls_ca_file?:string}>
      */
     public static function parseServers(string $connectionStr): array
     {
@@ -64,7 +65,7 @@ final class ConnectionStringParser
     }
 
     /**
-     * @return array{host:string,port:int,weight:int,user?:string,password?:string,database?:int}|null
+     * @return array{host:string,port:int,weight:int,user?:string,password?:string,database?:int,tls?:bool,tls_ca_file?:string}|null
      */
     private static function parseOne(string $token): ?array
     {
@@ -96,7 +97,7 @@ final class ConnectionStringParser
     }
 
     /**
-     * @return array{host:string,port:int,weight:int,user?:string,password?:string,database?:int}|null
+     * @return array{host:string,port:int,weight:int,user?:string,password?:string,database?:int,tls?:bool,tls_ca_file?:string}|null
      */
     private static function parseRedisUrl(string $token): ?array
     {
@@ -105,11 +106,18 @@ final class ConnectionStringParser
             return null;
         }
 
+        $tls = isset($parts['scheme']) && 'rediss' === $parts['scheme'];
+        $defaultPort = $tls ? 6380 : 0;
+
         $entry = [
             'host' => $parts['host'],
-            'port' => $parts['port'] ?? 0,
+            'port' => $parts['port'] ?? $defaultPort,
             'weight' => 0,
         ];
+
+        if ($tls) {
+            $entry['tls'] = true;
+        }
 
         if (isset($parts['user']) && '' !== $parts['user']) {
             $entry['user'] = rawurldecode($parts['user']);
@@ -123,6 +131,14 @@ final class ConnectionStringParser
             $db = ltrim($parts['path'], '/');
             if (ctype_digit($db)) {
                 $entry['database'] = (int) $db;
+            }
+        }
+
+        if (isset($parts['query']) && '' !== $parts['query']) {
+            parse_str($parts['query'], $query);
+            $caFile = $query['cafile'] ?? $query['tls_ca_file'] ?? null;
+            if (\is_string($caFile) && '' !== $caFile) {
+                $entry['tls_ca_file'] = rawurldecode($caFile);
             }
         }
 

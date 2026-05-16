@@ -12,6 +12,7 @@ use PureCache\Ignite\Internal\IgniteStatsSnapshot;
 use PureCache\Ignite\Internal\IgniteTransportException;
 use PureCache\Ignite\Internal\IgniteTransportFailure;
 use PureCache\Ignite\Internal\IgniteWire;
+use PureCache\Internal\ItemSizeGuard;
 
 /**
  * Pure-PHP Ignite thin-client transport.
@@ -58,6 +59,7 @@ final class NativeIgniteClient
         private readonly string $host,
         private readonly int $port,
         private readonly float $readWriteTimeout = 0.0,
+        private readonly int $maxFrameBytes = ItemSizeGuard::ABSOLUTE_MAX_BYTES,
     ) {
     }
 
@@ -557,7 +559,7 @@ final class NativeIgniteClient
     {
         $header = $this->readExact(4);
         $length = IgniteWire::unpackInt32($header, 0);
-        IgniteReply::assertFrameLength($length);
+        IgniteReply::assertFrameLength($length, $this->maxFrameBytes);
 
         if (0 === $length) {
             return '';

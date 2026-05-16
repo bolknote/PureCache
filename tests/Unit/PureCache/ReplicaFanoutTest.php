@@ -140,6 +140,23 @@ final class ReplicaFanoutTest extends TestCase
         self::assertCount(\count(array_unique($attempts)), $attempts, 'retry must pick a different server');
     }
 
+    public function testRetryStoreOnFailureSpreadsAcrossLiveServers(): void
+    {
+        $client = $this->newClientWithThreeServers();
+        $client->setOption(MemcachedClient::OPT_STORE_RETRY_COUNT, 24);
+
+        $indices = [];
+        $this->callRetryStore($client, null, 'item', static function (int $idx) use ($client, &$indices): bool {
+            $indices[] = $idx;
+            $rc = new \ReflectionMethod($client, 'setResult');
+            $rc->invoke($client, MemcachedConstants::RES_FAILURE, 'down');
+
+            return false;
+        });
+
+        self::assertGreaterThan(1, \count(array_unique($indices)), 'store retries must not always target the same live server');
+    }
+
     public function testRetryStoreOnFailureRespectsNonRetriableResults(): void
     {
         $client = $this->newClientWithThreeServers();

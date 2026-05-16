@@ -15,18 +15,24 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: "8.3"
-          coverage: none
+          coverage: pcov
           tools: composer:v2
-          extensions: igbinary
+          extensions: igbinary, openssl, zlib
 
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist
+
+      - name: PHPUnit coverage (unit, minimum line coverage)
+        run: composer test:coverage
 
       - name: PHPStan
         run: vendor/bin/phpstan analyse --no-progress --configuration=config/phpstan.neon
 
       - name: Psalm
         run: composer psalm
+
+      - name: Psalm (level 1, src only)
+        run: composer psalm:level1
 
       - name: PHP-CS-Fixer (dry run)
         run: vendor/bin/php-cs-fixer fix --dry-run --diff --config=config/php-cs-fixer.dist.php
@@ -37,11 +43,99 @@ jobs:
       - name: PHPUnit (unit)
         run: composer test
 
+      - name: PHPUnit (unit, no optional extensions)
+        run: composer test:no-opt-ext
+
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: pcov
+          tools: composer:v2
+          extensions: igbinary, openssl, zlib, pcov
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Infection mutation testing
+        run: composer test:mutation
+
+  memcached-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: none
+          tools: composer:v2
+          extensions: igbinary
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
       - name: Install memcached server
         run: sudo apt-get update && sudo apt-get install -y memcached
 
       - name: PHPUnit (memcached integration)
         run: composer test:integration
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: none
+          tools: composer:v2
+          extensions: igbinary
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Install memcached server
+        run: sudo apt-get update && sudo apt-get install -y memcached redis-server openssl unzip curl
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cross-backend contract tests
+        run: composer test:contract
+
+  memcached-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: none
+          tools: composer:v2
+          extensions: memcached, igbinary
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Install memcached server
+        run: sudo apt-get update && sudo apt-get install -y memcached
+
+      - name: PHPUnit (PECL parity)
+        run: composer test:parity
 
   redis-integration:
     runs-on: ubuntu-latest
@@ -70,8 +164,83 @@ jobs:
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist
 
+      - name: Install redis-server and OpenSSL
+        run: sudo apt-get update && sudo apt-get install -y redis-server openssl
+
+      - name: Generate Redis TLS fixtures
+        run: bash scripts/gen-redis-tls-fixtures.sh
+
+      - name: Start secondary Redis and TLS Redis
+        run: |
+          set -euo pipefail
+          SECONDARY_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          redis-server --port "${SECONDARY_PORT}" --save "" --appendonly no --daemonize yes
+          echo "REDIS_TEST_PORT_2=${SECONDARY_PORT}" >> "${GITHUB_ENV}"
+          redis-server \
+            --port 0 \
+            --tls-port 6380 \
+            --tls-cert-file tests/fixtures/redis-tls/server.crt \
+            --tls-key-file tests/fixtures/redis-tls/server.key \
+            --tls-ca-cert-file tests/fixtures/redis-tls/ca.crt \
+            --tls-auth-clients no \
+            --save "" \
+            --appendonly no \
+            --daemonize yes
+          echo "REDIS_TLS_TEST_PORT=6380" >> "${GITHUB_ENV}"
+          echo "REDIS_TLS_CA_FILE=${GITHUB_WORKSPACE}/tests/fixtures/redis-tls/ca.crt" >> "${GITHUB_ENV}"
+
       - name: PHPUnit (redis integration)
         env:
           REDIS_TEST_HOST: 127.0.0.1
           REDIS_TEST_PORT: "6379"
         run: composer test:redis
+
+  ignite-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: none
+          tools: composer:v2
+          extensions: igbinary
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Install unzip and curl
+        run: sudo apt-get update && sudo apt-get install -y unzip curl
+
+      - name: PHPUnit (Ignite integration)
+        run: composer test:ignite
+
+  check-php84:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+          tools: composer:v2
+          extensions: igbinary
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Static analysis and unit tests (PHP 8.4)
+        run: |
+          vendor/bin/phpstan analyse --no-progress --configuration=config/phpstan.neon
+          composer psalm
+          composer test

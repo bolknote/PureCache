@@ -11,6 +11,31 @@ services:
       - "6379:6379"
     command: ["redis-server", "--save", "", "--appendonly", "no"]
 
+  redis-tls:
+    image: redis:7-alpine
+    ports:
+      - "6380:6380"
+    volumes:
+      - ./tests/fixtures/redis-tls:/tls:ro
+    command:
+      - redis-server
+      - --port
+      - "0"
+      - --tls-port
+      - "6380"
+      - --tls-cert-file
+      - /tls/server.crt
+      - --tls-key-file
+      - /tls/server.key
+      - --tls-ca-cert-file
+      - /tls/ca.crt
+      - --tls-auth-clients
+      - "no"
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+
   ignite:
     image: apacheignite/ignite:2.16.0
     ports:

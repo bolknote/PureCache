@@ -325,14 +325,13 @@ final class MemcachedSessionHandler implements \SessionHandlerInterface, \Sessio
             $client->setOption(MemcachedConstants::OPT_LIBKETAMA_COMPATIBLE, true);
         }
 
-        // The rest of these are documented as unsupported on the meta protocol
-        // (see README "Explicitly unsupported"). PECL would call
-        // memcached_behavior_set() and warn if it failed; we mirror that:
-        // emit a warning on first apply, but never block the session open.
-        $this->trySetUnsupportedInt($client, MemcachedConstants::OPT_SERVER_FAILURE_LIMIT, $this->ini['server_failure_limit'], $silent);
-        $this->trySetUnsupportedInt($client, MemcachedConstants::OPT_NUMBER_OF_REPLICAS, $this->ini['number_of_replicas'], $silent);
-        $this->trySetUnsupportedBool($client, MemcachedConstants::OPT_RANDOMIZE_REPLICA_READ, $this->ini['randomize_replica_read_enabled'], $silent);
-        $this->trySetUnsupportedBool($client, MemcachedConstants::OPT_REMOVE_FAILED_SERVERS, $this->ini['remove_failed_servers_enabled'], $silent);
+        // Failover session INI knobs are honored by PureCache (see README). PECL
+        // emits a warning when libmemcached refuses a behavior flag; we still
+        // apply the option so getOption() reflects intent and never block open.
+        $this->trySetSessionOptionWithPeclWarning($client, MemcachedConstants::OPT_SERVER_FAILURE_LIMIT, $this->ini['server_failure_limit'], $silent);
+        $this->trySetSessionOptionWithPeclWarning($client, MemcachedConstants::OPT_NUMBER_OF_REPLICAS, $this->ini['number_of_replicas'], $silent);
+        $this->trySetSessionOptionWithPeclWarning($client, MemcachedConstants::OPT_RANDOMIZE_REPLICA_READ, $this->ini['randomize_replica_read_enabled'], $silent);
+        $this->trySetSessionOptionWithPeclWarning($client, MemcachedConstants::OPT_REMOVE_FAILED_SERVERS, $this->ini['remove_failed_servers_enabled'], $silent);
 
         if (0 !== $this->ini['connect_timeout']) {
             $client->setOption(MemcachedConstants::OPT_CONNECT_TIMEOUT, $this->ini['connect_timeout']);
@@ -361,27 +360,17 @@ final class MemcachedSessionHandler implements \SessionHandlerInterface, \Sessio
         return true;
     }
 
-    private function trySetUnsupportedInt(CacheClient $client, int $option, int $value, bool $silent): void
+    private function trySetSessionOptionWithPeclWarning(CacheClient $client, int $option, int|bool $value, bool $silent): void
     {
-        if (0 === $value) {
+        if (\is_int($value) && 0 === $value) {
+            return;
+        }
+
+        if (\is_bool($value) && !$value) {
             return;
         }
 
         if (!$client->setOption($option, $value) && !$silent) {
-            trigger_error(
-                \sprintf('failed to initialise session memcached configuration: %s', $client->getResultMessage()),
-                \E_USER_WARNING,
-            );
-        }
-    }
-
-    private function trySetUnsupportedBool(CacheClient $client, int $option, bool $value, bool $silent): void
-    {
-        if (!$value) {
-            return;
-        }
-
-        if (!$client->setOption($option, true) && !$silent) {
             trigger_error(
                 \sprintf('failed to initialise session memcached configuration: %s', $client->getResultMessage()),
                 \E_USER_WARNING,

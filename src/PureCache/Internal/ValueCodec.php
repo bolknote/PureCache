@@ -288,7 +288,12 @@ final class ValueCodec
 
                 self::setType($flags, self::TYPE_MSGPACK);
 
-                return msgpack_pack($value);
+                $packed = msgpack_pack($value);
+                if (!\is_string($packed)) {
+                    throw new \RuntimeException('msgpack_pack did not return a string');
+                }
+
+                return $packed;
             })(),
             default => (static function () use ($value, &$flags): string {
                 self::setType($flags, self::TYPE_SERIALIZED);
@@ -306,7 +311,7 @@ final class ValueCodec
             self::TYPE_DOUBLE => self::parseDouble($payload),
             self::TYPE_BOOL => '' !== $payload && '1' === $payload[0],
             self::TYPE_SERIALIZED => self::phpUnserialize($payload, $allowSerializedClasses),
-            self::TYPE_IGBINARY => self::igbinaryUnserialize($payload),
+            self::TYPE_IGBINARY => self::igbinaryUnserialize($payload, $allowSerializedClasses),
             self::TYPE_JSON => json_decode(
                 $payload,
                 MemcachedConstants::SERIALIZER_JSON_ARRAY === $serializer,
@@ -329,13 +334,60 @@ final class ValueCodec
         return $value;
     }
 
-    private static function igbinaryUnserialize(string $payload): mixed
+    private static function igbinaryUnserialize(string $payload, bool $allowSerializedClasses): mixed
     {
         if (!\function_exists('igbinary_unserialize')) {
             throw new \RuntimeException('igbinary not available');
         }
 
-        return igbinary_unserialize($payload);
+        if (self::igbinaryAcceptsUnserializeOptions()) {
+            if ($allowSerializedClasses) {
+                return igbinary_unserialize($payload);
+            }
+
+            return self::invokeIgbinaryUnserializeWithOptions($payload, ['allowed_classes' => false]);
+        }
+
+        $value = igbinary_unserialize($payload);
+        if (!$allowSerializedClasses && \is_object($value)) {
+            throw new \RuntimeException('igbinary object deserialization blocked (ext lacks allowed_classes option)');
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param array{allowed_classes?: bool} $options
+     */
+    private static function invokeIgbinaryUnserializeWithOptions(string $payload, array $options): mixed
+    {
+        $ref = new \ReflectionFunction('igbinary_unserialize');
+
+        return $ref->invoke($payload, $options);
+    }
+
+    private static ?bool $igbinaryUnserializeOptionsSupported = null;
+
+    private static function igbinaryAcceptsUnserializeOptions(): bool
+    {
+        if (null !== self::$igbinaryUnserializeOptionsSupported) {
+            return self::$igbinaryUnserializeOptionsSupported;
+        }
+
+        if (!\function_exists('igbinary_unserialize')) {
+            self::$igbinaryUnserializeOptionsSupported = false;
+
+            return false;
+        }
+
+        try {
+            $ref = new \ReflectionFunction('igbinary_unserialize');
+            self::$igbinaryUnserializeOptionsSupported = $ref->getNumberOfParameters() >= 2;
+        } catch (\ReflectionException) {
+            self::$igbinaryUnserializeOptionsSupported = false;
+        }
+
+        return self::$igbinaryUnserializeOptionsSupported;
     }
 
     /**

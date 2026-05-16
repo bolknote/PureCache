@@ -16,7 +16,7 @@ interface CacheClient
 
     public function getResultMessage(): string;
 
-    public function addServer(string $host, int $port, int $weight = 0): bool;
+    public function addServer(string $host, int $port = 0, int $weight = 0): bool;
 
     /**
      * @param array<mixed> $servers

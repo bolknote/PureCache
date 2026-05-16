@@ -10,6 +10,26 @@ use PureCache\Memcached\MemcachedClient;
 
 final class ValueCodecTest extends TestCase
 {
+    public function testJsonArraySerializerDecodesToPhpArray(): void
+    {
+        $value = ['k' => ['nested' => 1]];
+
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_JSON_ARRAY,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+        );
+
+        $decoded = ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_JSON_ARRAY);
+        self::assertIsArray($decoded);
+        self::assertSame($value, $decoded);
+    }
+
     public function testPrimitiveRoundTrips(): void
     {
         $cases = [
@@ -109,6 +129,69 @@ final class ValueCodecTest extends TestCase
 
         $decoded = ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP);
         self::assertInstanceOf(\__PHP_Incomplete_Class::class, $decoded);
+    }
+
+    public function testIgbinarySerializedClassesAreSafeByDefault(): void
+    {
+        if (!\function_exists('igbinary_serialize')) {
+            self::markTestSkipped('igbinary extension not available');
+        }
+
+        $value = new \DateTimeImmutable('2026-05-14T12:00:00Z');
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_IGBINARY,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+        );
+
+        if ($this->igbinarySupportsAllowedClassesOption()) {
+            $decoded = ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_IGBINARY);
+            self::assertInstanceOf(\__PHP_Incomplete_Class::class, $decoded);
+        } else {
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('igbinary object deserialization blocked');
+            ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_IGBINARY);
+        }
+    }
+
+    public function testIgbinarySerializedClassesRehydrateOnOptIn(): void
+    {
+        if (!\function_exists('igbinary_serialize')) {
+            self::markTestSkipped('igbinary extension not available');
+        }
+
+        $value = new \DateTimeImmutable('2026-05-14T12:00:00Z');
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_IGBINARY,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+        );
+
+        $decoded = ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_IGBINARY, true);
+        self::assertInstanceOf(\DateTimeImmutable::class, $decoded);
+    }
+
+    private function igbinarySupportsAllowedClassesOption(): bool
+    {
+        if (!\function_exists('igbinary_unserialize')) {
+            return false;
+        }
+
+        try {
+            return (new \ReflectionFunction('igbinary_unserialize'))->getNumberOfParameters() >= 2;
+        } catch (\ReflectionException) {
+            return false;
+        }
     }
 
     public function testPhpSerializedClassesRehydrateOnOptIn(): void
@@ -434,6 +517,76 @@ final class ValueCodecTest extends TestCase
         );
     }
 
+    public function testFastlzCompressionRoundTripWhenExtensionIsLoaded(): void
+    {
+        if (!\function_exists('fastlz_compress') || !\function_exists('fastlz_decompress')) {
+            self::markTestSkipped('fastlz is not available');
+        }
+
+        $value = str_repeat('fastlz-', 250);
+
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_PHP,
+            true,
+            MemcachedClient::COMPRESSION_FASTLZ,
+            3,
+            1,
+            1.30,
+            -1,
+        );
+
+        self::assertTrue(ValueCodec::hasCompression($flags));
+        self::assertSame($value, ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP));
+    }
+
+    public function testZstdCompressionRoundTripWhenExtensionIsLoaded(): void
+    {
+        if (!\function_exists('zstd_compress') || !\function_exists('zstd_uncompress')) {
+            self::markTestSkipped('zstd is not available');
+        }
+
+        $value = str_repeat('zstd-payload-', 200);
+
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_PHP,
+            true,
+            MemcachedClient::COMPRESSION_ZSTD,
+            3,
+            1,
+            1.30,
+            -1,
+        );
+
+        self::assertTrue(ValueCodec::hasCompression($flags));
+        self::assertSame(MemcachedClient::COMPRESSION_ZSTD, ValueCodec::compressionKind($flags));
+        self::assertSame($value, ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_PHP));
+    }
+
+    public function testMsgpackRoundTripWhenExtensionIsLoaded(): void
+    {
+        if (!\function_exists('msgpack_pack') || !\function_exists('msgpack_unpack')) {
+            self::markTestSkipped('msgpack is not available');
+        }
+
+        $value = ['n' => 42, 'nested' => ['ok' => true]];
+
+        [$payload, $flags] = ValueCodec::encode(
+            $value,
+            MemcachedClient::SERIALIZER_MSGPACK,
+            false,
+            MemcachedClient::COMPRESSION_ZLIB,
+            3,
+            2000,
+            1.30,
+            -1,
+        );
+
+        self::assertSame(ValueCodec::TYPE_MSGPACK, ValueCodec::getType($flags));
+        self::assertSame($value, ValueCodec::decode($payload, $flags, MemcachedClient::SERIALIZER_MSGPACK));
+    }
+
     public function testUnavailableZstdCompressionIsSkippedWithoutChangingPayload(): void
     {
         if (\function_exists('zstd_compress')) {
@@ -477,6 +630,46 @@ final class ValueCodecTest extends TestCase
         $this->expectExceptionMessage('fastlz not available');
 
         ValueCodec::decode(pack('V', 10).'payload', ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_FASTLZ, MemcachedClient::SERIALIZER_PHP);
+    }
+
+    public function testCorruptZstdCompressedPayloadFailsDecompression(): void
+    {
+        if (!\function_exists('zstd_uncompress')) {
+            self::markTestSkipped('zstd is not available');
+        }
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('zstd decompress failed');
+
+        ValueCodec::decode(
+            pack('V', 5).'not-zstd',
+            ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_ZSTD,
+            MemcachedClient::SERIALIZER_PHP,
+        );
+    }
+
+    public function testCorruptFastlzCompressedPayloadFailsDecompression(): void
+    {
+        if (!\function_exists('fastlz_decompress')) {
+            self::markTestSkipped('fastlz is not available');
+        }
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('fastlz decompress failed');
+
+        ValueCodec::decode(
+            pack('V', 5).'not-fastlz',
+            ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_FASTLZ,
+            MemcachedClient::SERIALIZER_PHP,
+        );
+    }
+
+    public function testCompressedPayloadUnderFourBytesFailsFast(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Invalid compressed payload');
+
+        ValueCodec::decode('abc', ValueCodec::COMPRESSED | ValueCodec::COMPRESSION_ZLIB, MemcachedClient::SERIALIZER_PHP);
     }
 
     public function testUnavailableMsgpackDeserializationFailsFast(): void

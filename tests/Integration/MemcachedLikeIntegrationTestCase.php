@@ -1108,4 +1108,36 @@ abstract class MemcachedLikeIntegrationTestCase extends TestCase
         self::assertSame(42, $peclRead['data']);
         self::assertSame('memcached', $peclRead['tag']);
     }
+
+    public function testIgbinarySerializedObjectIsSafeByDefaultAndOptInRehydratesIt(): void
+    {
+        if (!\function_exists('igbinary_serialize')) {
+            self::markTestSkipped('igbinary extension not available');
+        }
+
+        $writer = $this->createClient();
+        $writer->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_IGBINARY);
+
+        $key = $this->key('pure_safe_igbinary');
+        $payload = new \ArrayObject(['data' => 7]);
+        self::assertTrue($writer->set($key, $payload, 60));
+
+        $safeReader = $this->createClient();
+        $safeReader->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_IGBINARY);
+        if ((new \ReflectionFunction('igbinary_unserialize'))->getNumberOfParameters() >= 2) {
+            $safeRead = $safeReader->get($key);
+            self::assertInstanceOf(\__PHP_Incomplete_Class::class, $safeRead);
+        } else {
+            self::assertFalse($safeReader->get($key));
+            self::assertSame(MemcachedClient::RES_PAYLOAD_FAILURE, $safeReader->getResultCode());
+        }
+
+        $peclReader = $this->createClient();
+        $peclReader->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_IGBINARY);
+        $peclReader->setOption(MemcachedClient::OPT_ALLOW_SERIALIZED_CLASSES, true);
+
+        $peclRead = $peclReader->get($key);
+        self::assertInstanceOf(\ArrayObject::class, $peclRead);
+        self::assertSame(7, $peclRead['data']);
+    }
 }

@@ -7,10 +7,13 @@
         "process-timeout": 0,
         "platform": {
             "php": "8.3.31"
+        },
+        "allow-plugins": {
+            "infection/extension-installer": true
         }
     },
     "require": {
-        "php": "^8.3",
+        "php": "~8.3.0",
         "ext-json": "*"
     },
     "suggest": {
@@ -35,11 +38,26 @@
         "test:no-opt-ext": "@php scripts/run-phpunit-no-opt-ext.php",
         "test:integration": "@php scripts/run-memcached-tests.php",
         "test:parity": "@php scripts/run-memcached-tests.php tests/Parity",
+        "test:contract": [
+            "@php scripts/run-memcached-tests.php --filter BackendContract",
+            "@php scripts/run-redis-tests.php --filter BackendContract",
+            "@php scripts/run-ignite-tests.php --filter BackendContract"
+        ],
         "test:redis": "@php scripts/run-redis-tests.php",
         "test:ignite": "@php scripts/run-ignite-tests.php",
-        "test:coverage": "@php vendor/bin/phpunit --configuration=config/phpunit.xml --coverage-text --colors=never",
+        "test:integration:all": [
+            "@test:integration",
+            "@test:redis",
+            "@test:ignite"
+        ],
+        "test:coverage": [
+            "@php vendor/bin/phpunit --configuration=config/phpunit-coverage.xml --coverage-text --colors=never",
+            "@php scripts/assert-min-line-coverage.php cache/coverage.xml 86"
+        ],
+        "test:mutation": "@php scripts/run-infection.php",
         "phpstan": "phpstan analyse --memory-limit=512M --configuration=config/phpstan.neon",
         "psalm": "psalm --config=config/psalm.xml --memory-limit=512M --no-progress",
+        "psalm:level1": "psalm --config=config/psalm-level1.xml --memory-limit=512M --no-progress",
         "cs-fix": "php-cs-fixer fix --config=config/php-cs-fixer.dist.php",
         "cs-check": "php-cs-fixer fix --dry-run --diff --config=config/php-cs-fixer.dist.php",
         "rector": "rector process --config=config/rector.php",
@@ -47,10 +65,18 @@
         "check": [
             "@phpstan",
             "@psalm",
+            "@psalm:level1",
             "@cs-check",
             "@rector-check",
             "@test",
             "@test:no-opt-ext"
+        ],
+        "check:full": [
+            "@check",
+            "@test:coverage",
+            "@test:integration:all",
+            "@test:contract",
+            "@test:mutation"
         ]
     },
     "require-dev": {
@@ -62,6 +88,7 @@
         "phpstan/phpstan-deprecation-rules": "^2.0",
         "phpstan/phpstan-phpunit": "^2.0",
         "vimeo/psalm": "^6.16",
-        "psalm/plugin-phpunit": "^0.19"
+        "psalm/plugin-phpunit": "^0.19",
+        "infection/infection": "^0.31"
     }
 }

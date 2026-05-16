@@ -27,6 +27,7 @@ final class IgniteCommandResultMapperTest extends TestCase
         yield 'auth failed' => [IgniteProtocol::STATUS_AUTH_FAILED, MemcachedConstants::RES_AUTH_FAILURE];
         yield 'security violation' => [IgniteProtocol::STATUS_SECURITY_VIOLATION, MemcachedConstants::RES_AUTH_FAILURE];
         yield 'node recovery' => [IgniteProtocol::STATUS_NODE_IN_RECOVERY_MODE, MemcachedConstants::RES_SERVER_TEMPORARILY_DISABLED];
+        yield 'invalid node state' => [IgniteProtocol::STATUS_INVALID_NODE_STATE, MemcachedConstants::RES_SERVER_TEMPORARILY_DISABLED];
         yield 'resource missing' => [IgniteProtocol::STATUS_RESOURCE_DOES_NOT_EXIST, MemcachedConstants::RES_NOTFOUND];
         yield 'cache missing' => [IgniteProtocol::STATUS_CACHE_DOES_NOT_EXIST, MemcachedConstants::RES_DATA_DOES_NOT_EXIST];
         yield 'unknown' => [IgniteProtocol::STATUS_FAILED, MemcachedConstants::RES_FAILURE];
@@ -51,8 +52,8 @@ final class IgniteCommandResultMapperTest extends TestCase
         yield 'write timeout' => [IgniteTransportFailure::WriteTimedOut, MemcachedConstants::RES_TIMEOUT];
         yield 'read truncated' => [IgniteTransportFailure::ReadTruncated, MemcachedConstants::RES_READ_FAILURE];
         yield 'write failed' => [IgniteTransportFailure::WriteFailed, MemcachedConstants::RES_READ_FAILURE];
-        yield 'frame length invalid' => [IgniteTransportFailure::FrameLengthInvalid, MemcachedConstants::RES_FAILURE];
-        yield 'frame length exceeded' => [IgniteTransportFailure::FrameLengthExceeded, MemcachedConstants::RES_FAILURE];
+        yield 'frame length invalid' => [IgniteTransportFailure::FrameLengthInvalid, MemcachedConstants::RES_E2BIG];
+        yield 'frame length exceeded' => [IgniteTransportFailure::FrameLengthExceeded, MemcachedConstants::RES_E2BIG];
         yield 'reply too short' => [IgniteTransportFailure::ReplyTooShort, MemcachedConstants::RES_FAILURE];
         yield 'request id mismatch' => [IgniteTransportFailure::RequestIdMismatch, MemcachedConstants::RES_FAILURE];
         yield 'retry exhausted' => [IgniteTransportFailure::RetryExhausted, MemcachedConstants::RES_FAILURE];

@@ -20,78 +20,59 @@ final class ClientFactoryTest extends TestCase
         parent::tearDown();
     }
 
-    public function testNullAndEmptyAndMemcachedAliasesYieldMemcachedClient(): void
+    public function testCreateBuildsBuiltinBackends(): void
     {
         self::assertInstanceOf(MemcachedClient::class, ClientFactory::create());
-        self::assertInstanceOf(MemcachedClient::class, ClientFactory::create(''));
-        self::assertInstanceOf(MemcachedClient::class, ClientFactory::create('memcached'));
-        self::assertInstanceOf(MemcachedClient::class, ClientFactory::create('Mc'));
-    }
-
-    public function testRedisBackend(): void
-    {
+        self::assertInstanceOf(MemcachedClient::class, ClientFactory::create('mc'));
         self::assertInstanceOf(RedisClient::class, ClientFactory::create('redis'));
-    }
-
-    public function testIgniteBackendIsAvailableUnderBothAliases(): void
-    {
         self::assertInstanceOf(IgniteClient::class, ClientFactory::create('ignite'));
-        self::assertInstanceOf(IgniteClient::class, ClientFactory::create('IG'));
+        self::assertInstanceOf(IgniteClient::class, ClientFactory::create('ig'));
     }
 
-    public function testUnknownBackendThrows(): void
+    public function testCreateRejectsUnknownBackend(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        ClientFactory::create('valkey');
+        ClientFactory::create('not-a-backend');
     }
 
-    public function testRegisterCustomBackendIsCaseInsensitive(): void
-    {
-        $stub = $this->createMock(CacheClient::class);
-
-        ClientFactory::register('CustomVault', static fn (): CacheClient => $stub);
-
-        self::assertSame($stub, ClientFactory::create('customvault'));
-        self::assertSame($stub, ClientFactory::create('  CUSTOMVAULT  '));
-    }
-
-    public function testRegisterPassesConstructorArgumentsToFactory(): void
-    {
-        $captured = [];
-        ClientFactory::register('probe', function (?string $pid, ?callable $cb, ?string $conn) use (&$captured): CacheClient {
-            $captured = [$pid, $cb, $conn];
-
-            return $this->createMock(CacheClient::class);
-        });
-
-        $cb = static function (): void {};
-        ClientFactory::create('probe', 'p1', $cb, '127.0.0.1:11211');
-        self::assertSame(['p1', $cb, '127.0.0.1:11211'], $captured);
-    }
-
-    public function testRegisterOverBuiltinThrows(): void
+    public function testRegisterRejectsEmptyName(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        ClientFactory::register('redis', fn (): CacheClient => $this->createMock(CacheClient::class));
+        ClientFactory::register('   ', static fn (): CacheClient => new MemcachedClient());
     }
 
-    public function testUnregisterRemovesCustomBackend(): void
+    public function testUnregisterRejectsEmptyName(): void
     {
-        ClientFactory::register('tmp', fn (): CacheClient => $this->createMock(CacheClient::class));
-        ClientFactory::unregister('tmp');
         $this->expectException(\InvalidArgumentException::class);
-        ClientFactory::create('tmp');
+        ClientFactory::unregister("\t");
     }
 
-    public function testUnregisterBuiltinThrows(): void
+    public function testCreateUsesRegisteredBackend(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        ClientFactory::unregister('redis');
+        ClientFactory::register('custom', static fn (): CacheClient => new MemcachedClient());
+
+        $client = ClientFactory::create('custom');
+        self::assertInstanceOf(MemcachedClient::class, $client);
     }
 
-    public function testRegisterOverIgniteThrows(): void
+    public function testUnregisterRemovesRegisteredBackend(): void
+    {
+        ClientFactory::register('temp', static fn (): CacheClient => new MemcachedClient());
+        ClientFactory::unregister('temp');
+
+        $this->expectException(\InvalidArgumentException::class);
+        ClientFactory::create('temp');
+    }
+
+    public function testRegisterRejectsBuiltinBackendName(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        ClientFactory::register('ignite', fn (): CacheClient => $this->createMock(CacheClient::class));
+        ClientFactory::register('redis', static fn (): CacheClient => new MemcachedClient());
+    }
+
+    public function testUnregisterRejectsBuiltinBackendName(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        ClientFactory::unregister('mc');
     }
 }

@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<psalm
+    errorLevel="1"
+    resolveFromConfigFile="true"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns="https://getpsalm.org/schema/config"
+    xsi:schemaLocation="https://getpsalm.org/schema/config ../vendor/vimeo/psalm/config.xsd"
+    findUnusedBaselineEntry="false"
+    findUnusedCode="false"
+    phpVersion="8.3.0"
+    cacheDirectory="../cache/psalm-level1"
+>
+    <projectFiles>
+        <directory name="../src"/>
+        <file name="../bootstrap-alias.php"/>
+        <ignoreFiles allowMissingFiles="true">
+            <directory name="../vendor"/>
+        </ignoreFiles>
+    </projectFiles>
+
+    <issueHandlers>
+        <MixedAssignment>
+            <errorLevel type="suppress">
+                <directory name="../src/PureCache/Internal"/>
+                <directory name="../src/PureCache/Ignite"/>
+                <directory name="../src/PureCache/Memcached"/>
+                <directory name="../src/PureCache/Redis"/>
+            </errorLevel>
+        </MixedAssignment>
+        <MixedArgument>
+            <errorLevel type="suppress">
+                <file name="../src/PureCache/Internal/ServerSelector.php"/>
+            </errorLevel>
+        </MixedArgument>
+        <MixedArgumentTypeCoercion>
+            <errorLevel type="suppress">
+                <file name="../src/PureCache/AbstractCacheClient.php"/>
+                <file name="../src/PureCache/Internal/ClientCoordinatorRegistry.php"/>
+                <file name="../src/PureCache/Redis/RedisClient.php"/>
+            </errorLevel>
+        </MixedArgumentTypeCoercion>
+    </issueHandlers>
+</psalm>

@@ -47,6 +47,19 @@ final class ClientCoreStateTest extends TestCase
         self::assertSame(1.42, $core->compressionFactor);
     }
 
+    public function testApplyIniDefaultsMapsPhpIniSerializerToRuntimeDefaultWhenExtensionsDiffer(): void
+    {
+        $runtime = ClientOptions::defaultSerializer();
+        if (MemcachedConstants::SERIALIZER_PHP === $runtime) {
+            self::markTestSkipped('runtime default serializer is already PHP');
+        }
+
+        $core = MemcachedClientCore::createFresh();
+        $core->applyIniDefaults($this->snapshot(['serializer' => MemcachedConstants::SERIALIZER_PHP]));
+
+        self::assertSame($runtime, $core->options[MemcachedConstants::OPT_SERIALIZER]);
+    }
+
     public function testApplyIniDefaultsWithConsistentHashTurnsOnKetamaDistribution(): void
     {
         $core = MemcachedClientCore::createFresh();

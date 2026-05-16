@@ -63,7 +63,7 @@ final class SessionSpyCacheClient implements CacheClient
     }
 
     #[\Override]
-    public function addServer(string $host, int $port, int $weight = 0): bool
+    public function addServer(string $host, int $port = 0, int $weight = 0): bool
     {
         $this->calls[] = ['method' => 'addServer', 'key' => $host.':'.$port];
 

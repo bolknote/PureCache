@@ -1,0 +1,23 @@
+{
+    "$schema": "vendor/infection/infection/resources/schema.json",
+    "source": {
+        "directories": ["src/PureCache"]
+    },
+    "logs": {
+        "text": "cache/infection.log",
+        "summary": "cache/infection-summary.log"
+    },
+    "tmpDir": "cache/infection/tmp",
+    "phpUnit": {
+        "configDir": "config",
+        "customPath": "config/phpunit-coverage.xml"
+    },
+    "mutators": {
+        "@default": true
+    },
+    "minMsi": 80,
+    "minCoveredMsi": 85,
+    "ignoreMsiWithNoMutations": true,
+    "timeout": 10,
+    "threads": 4
+}

@@ -50,6 +50,13 @@ final class ClientOptionApplier
             return self::applyFailoverNonNegativeInt($core, $option, $value, $env);
         }
 
+        if (self::isRedisOnlyOption($option)) {
+            return ClientOptionResult::failure(
+                MemcachedConstants::RES_NOT_SUPPORTED,
+                'TLS options are only supported by the Redis-backed client',
+            );
+        }
+
         if ($env->isUnsupportedOption($option) || self::isGloballyUnsupported($option)) {
             return ClientOptionResult::failure(MemcachedConstants::RES_NOT_SUPPORTED, $env->unsupportedOptionMessage());
         }
@@ -328,6 +335,7 @@ final class ClientOptionApplier
 
         $core->options[$option] = $integer;
         if (\in_array($option, [
+            MemcachedConstants::OPT_ITEM_SIZE_LIMIT,
             MemcachedConstants::OPT_SOCKET_SEND_SIZE,
             MemcachedConstants::OPT_SOCKET_RECV_SIZE,
             // TCP_KEEPIDLE is applied at socket-open time inside
@@ -514,5 +522,11 @@ final class ClientOptionApplier
         }
 
         return ClientOptionResult::success();
+    }
+
+    private static function isRedisOnlyOption(int $option): bool
+    {
+        return MemcachedConstants::OPT_TLS_CA_FILE === $option
+            || MemcachedConstants::OPT_TLS_PEER_NAME === $option;
     }
 }

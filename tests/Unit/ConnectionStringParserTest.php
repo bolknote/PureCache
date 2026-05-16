@@ -55,6 +55,14 @@ final class ConnectionStringParserTest extends TestCase
         self::assertSame([], ConnectionStringParser::parseServers('missing-port [::1] --SERVER='));
     }
 
+    public function testIgnoresWhitespaceOnlyServerPrefixValue(): void
+    {
+        self::assertSame(
+            [['host' => 'cache', 'port' => 11211, 'weight' => 0]],
+            ConnectionStringParser::parseServers('--SERVER=   ,cache:11211'),
+        );
+    }
+
     public function testEmptyStringReturnsEmptyList(): void
     {
         self::assertSame([], ConnectionStringParser::parseServers(''));
@@ -105,10 +113,30 @@ final class ConnectionStringParserTest extends TestCase
         );
     }
 
-    public function testParsesRedissUrlAsRegularRedis(): void
+    public function testParsesRedissUrlEnablesTls(): void
     {
         $servers = ConnectionStringParser::parseServers('rediss://host:6380');
-        self::assertSame([['host' => 'host', 'port' => 6380, 'weight' => 0]], $servers);
+        self::assertSame([['host' => 'host', 'port' => 6380, 'weight' => 0, 'tls' => true]], $servers);
+    }
+
+    public function testParsesRedissUrlDefaultsPort6380(): void
+    {
+        $servers = ConnectionStringParser::parseServers('rediss://cache.example');
+        self::assertSame([['host' => 'cache.example', 'port' => 6380, 'weight' => 0, 'tls' => true]], $servers);
+    }
+
+    public function testParsesRedissUrlCafileQueryParameter(): void
+    {
+        $servers = ConnectionStringParser::parseServers('rediss://cache.example:6380?cafile=%2Fetc%2Fssl%2Fca.pem');
+        self::assertSame([
+            [
+                'host' => 'cache.example',
+                'port' => 6380,
+                'weight' => 0,
+                'tls' => true,
+                'tls_ca_file' => '/etc/ssl/ca.pem',
+            ],
+        ], $servers);
     }
 
     public function testRedisUrlWithoutHostIsRejected(): void

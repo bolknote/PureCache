@@ -390,6 +390,15 @@ abstract class MemcachedConstants
      */
     public const int OPT_ENCODING_MODE = -1010;
 
+    /** Redis {@code rediss://} only: PEM CA bundle path for TLS verification. */
+    public const int OPT_TLS_CA_FILE = -1011;
+
+    /**
+     * Redis TLS only: override TLS {@code peer_name} (SNI / certificate hostname).
+     * String value; defaults to the server host (with loopback mapped to {@code localhost}).
+     */
+    public const int OPT_TLS_PEER_NAME = -1012;
+
     /**
      * Bit-compatible with libmemcached: AES-128-ECB, MD5-derived key,
      * zero-padded output, no flag bit on stored entries.

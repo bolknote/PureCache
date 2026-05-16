@@ -29,6 +29,7 @@ if (function_exists('pcntl_signal')) {
     });
 }
 
+$binary = null;
 $externalHost = getenv('REDIS_TEST_HOST');
 $externalPrimaryPort = getenv('REDIS_TEST_PORT');
 
@@ -90,6 +91,27 @@ if (!is_array($env)) {
 $env['REDIS_TEST_HOST'] = $primaryRedis['host'] ?? REDIS_BIND_HOST;
 $env['REDIS_TEST_PORT'] = (string) $primaryRedis['port'];
 $env['REDIS_TEST_PORT_2'] = (string) $secondaryRedis['port'];
+
+$tlsCaFile = ensureRedisTlsFixtures();
+if (null !== $tlsCaFile && null === $binary && is_string($externalHost)) {
+    $externalTlsPort = getenv('REDIS_TLS_TEST_PORT');
+    if (!is_string($externalTlsPort) || '' === $externalTlsPort) {
+        $externalTlsPort = '6380';
+    }
+
+    $env['REDIS_TLS_TEST_PORT'] = $externalTlsPort;
+    $env['REDIS_TLS_CA_FILE'] = $tlsCaFile;
+} elseif (null !== $tlsCaFile && null !== $binary) {
+    try {
+        $tlsRedis = startRedisTlsServer($binary, REDIS_BIND_HOST, dirname($tlsCaFile));
+        $redisInstances[] = $tlsRedis;
+        $env['REDIS_TLS_TEST_PORT'] = (string) $tlsRedis['port'];
+        $env['REDIS_TLS_CA_FILE'] = $tlsCaFile;
+        fwrite(\STDERR, 'Started redis-server (TLS) on '.REDIS_BIND_HOST.':'.$tlsRedis['port']."\n");
+    } catch (Throwable $throwable) {
+        fwrite(\STDERR, 'Redis TLS server skipped: '.$throwable->getMessage()."\n");
+    }
+}
 
 exit(runProcess($testCommand, __DIR__.'/..', $env));
 
@@ -176,6 +198,82 @@ function reserveFreeTcpPort(string $host): int
     }
 
     throw new RuntimeException("Unable to reserve a free TCP port above 1024 for {$host}.");
+}
+
+/**
+ * @return array{process: resource, pipes: array<int, resource>, port: int}
+ */
+function ensureRedisTlsFixtures(): ?string
+{
+    $script = __DIR__.'/gen-redis-tls-fixtures.sh';
+    if (!is_file($script)) {
+        return null;
+    }
+
+    $ca = __DIR__.'/../tests/fixtures/redis-tls/ca.crt';
+    if (!is_file($ca)) {
+        $cmd = ['bash', $script];
+        $process = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, __DIR__.'/..');
+        if (!is_resource($process)) {
+            return null;
+        }
+
+        fclose($pipes[0]);
+        stream_get_contents($pipes[1]);
+        stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        proc_close($process);
+    }
+
+    return is_file($ca) ? $ca : null;
+}
+
+/**
+ * @return array{process: resource, pipes: array<int, resource>, port: int}
+ */
+function startRedisTlsServer(string $binary, string $host, string $certDir): array
+{
+    $port = reserveFreeTcpPort($host);
+    $command = [
+        $binary,
+        '--bind', $host,
+        '--port', '0',
+        '--tls-port', (string) $port,
+        '--tls-cert-file', $certDir.'/server.crt',
+        '--tls-key-file', $certDir.'/server.key',
+        '--tls-ca-cert-file', $certDir.'/ca.crt',
+        '--tls-auth-clients', 'no',
+        '--save', '',
+        '--appendonly', 'no',
+        '--loglevel', 'warning',
+    ];
+
+    $pipes = [];
+    $process = proc_open($command, [
+        ['file', '/dev/null', 'r'],
+        ['pipe', 'w'],
+        ['pipe', 'w'],
+    ], $pipes, __DIR__.'/..');
+    if (!is_resource($process)) {
+        throw new RuntimeException("Failed to start TLS redis-server on {$host}:{$port}");
+    }
+
+    stream_set_blocking($pipes[1], false);
+    stream_set_blocking($pipes[2], false);
+
+    if (!waitForTcpServer($host, $port, STARTUP_TIMEOUT_USEC, $process, $pipes[2])) {
+        $stderr = stream_get_contents($pipes[2]);
+        stopRedisServer($process, $pipes);
+        $details = false !== $stderr && '' !== $stderr ? trim($stderr) : 'no stderr';
+        throw new RuntimeException("TLS redis-server did not become ready on {$host}:{$port} ({$details})");
+    }
+
+    return [
+        'process' => $process,
+        'pipes' => $pipes,
+        'port' => $port,
+    ];
 }
 
 /**

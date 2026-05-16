@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace PureCache\Redis;
 
+use PureCache\Internal\ItemSizeGuard;
+
 /**
  * Minimal Redis TCP client (RESP2). No external Redis PHP extension — same idea as the memcached stack path.
  */
@@ -27,6 +29,10 @@ final class NativeRedisClient implements RedisStatsBackend
         #[\SensitiveParameter]
         private readonly ?string $authPassword = null,
         private readonly ?int $database = null,
+        private readonly int $maxBulkBytes = ItemSizeGuard::ABSOLUTE_MAX_BYTES,
+        private readonly bool $useTls = false,
+        private readonly ?string $tlsCaFile = null,
+        private readonly ?string $tlsPeerNameOverride = null,
     ) {
     }
 
@@ -38,13 +44,12 @@ final class NativeRedisClient implements RedisStatsBackend
 
         $errno = 0;
         $errstr = '';
-        $remote = 'tcp://'.$this->host.':'.$this->port;
+        $scheme = $this->useTls ? 'ssl' : 'tcp';
+        $remote = $scheme.'://'.$this->host.':'.$this->port;
         $flags = \STREAM_CLIENT_CONNECT;
         $timeout = $this->readWriteTimeout > 0 ? $this->readWriteTimeout : (float) \ini_get('default_socket_timeout');
 
-        $ctx = stream_context_create([
-            'socket' => ['tcp_nodelay' => true],
-        ]);
+        $ctx = stream_context_create($this->streamContextOptions());
 
         $stream = @stream_socket_client($remote, $errno, $errstr, $timeout, $flags, $ctx);
         if (!\is_resource($stream)) {
@@ -90,6 +95,43 @@ final class NativeRedisClient implements RedisStatsBackend
                 throw new \RuntimeException('Redis SELECT '.$this->database.' rejected: '.$redisCommandException->getMessage(), 0, $redisCommandException);
             }
         }
+    }
+
+    /**
+     * @return array<string, array<string, bool|int|string>>
+     */
+    private function streamContextOptions(): array
+    {
+        $options = [
+            'socket' => ['tcp_nodelay' => true],
+        ];
+
+        if ($this->useTls) {
+            $ssl = [
+                'verify_peer' => true,
+                'verify_peer_name' => true,
+                'peer_name' => $this->tlsPeerName(),
+            ];
+            if (null !== $this->tlsCaFile && '' !== $this->tlsCaFile && is_file($this->tlsCaFile)) {
+                $ssl['cafile'] = $this->tlsCaFile;
+            }
+
+            $options['ssl'] = $ssl;
+        }
+
+        return $options;
+    }
+
+    private function tlsPeerName(): string
+    {
+        if (null !== $this->tlsPeerNameOverride && '' !== $this->tlsPeerNameOverride) {
+            return $this->tlsPeerNameOverride;
+        }
+
+        return match ($this->host) {
+            '127.0.0.1', '::1' => 'localhost',
+            default => $this->host,
+        };
     }
 
     private function forceClose(): void
@@ -435,6 +477,10 @@ final class NativeRedisClient implements RedisStatsBackend
         $n = (int) $lenLine;
         if ($n < 0) {
             return null;
+        }
+
+        if ($n > $this->maxBulkBytes) {
+            throw new RedisCommandException('ERR bulk string exceeds item size limit');
         }
 
         if (0 === $n) {

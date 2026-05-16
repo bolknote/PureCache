@@ -1,6 +1,9 @@
 /vendor/
 /.phpunit.cache/
 /cache/
+/tests/fixtures/redis-tls/*.key
+/tests/fixtures/redis-tls/*.crt
+/tests/fixtures/redis-tls/*.srl
 .php-cs-fixer.cache
 composer.phar
 .phpunit.result.cache

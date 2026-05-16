@@ -9,6 +9,16 @@ use PureCache\Memcached\MemcachedClient;
 
 final class IgniteIntegrationTest extends MemcachedLikeIntegrationTestCase
 {
+    use BackendContractIntegrationTrait;
+    use MultiProcessConcurrencyTrait;
+    use ReadSizeLimitIntegrationTrait;
+    use SingleProcessSemanticsIntegrationTrait;
+
+    protected function contractExpectsFlushDelaySupport(): bool
+    {
+        return false;
+    }
+
     #[\Override]
     protected static function integrationHost(): string
     {
@@ -77,64 +87,34 @@ final class IgniteIntegrationTest extends MemcachedLikeIntegrationTestCase
         $m->delete($key);
     }
 
-    public function testConcurrentCasRaceLetsExactlyOneWriterWin(): void
+    #[\Override]
+    protected function parallelBackendName(): string
     {
-        $key = 'pure_ig_cas_race_'.bin2hex(random_bytes(8));
-
-        $writer = $this->createClient();
-        self::assertTrue($writer->set($key, 'seed', 60));
-
-        $reader = $this->createClient();
-        $ext = $reader->get($key, null, MemcachedClient::GET_EXTENDED);
-        self::assertIsArray($ext);
-        $cas = $ext['cas'];
-        self::assertIsInt($cas);
-
-        $racers = [];
-        for ($i = 0; $i < 8; ++$i) {
-            $racers[$i] = $this->createClient();
-        }
-
-        $successful = 0;
-        foreach ($racers as $i => $client) {
-            if ($client->cas($cas, $key, 'winner-'.$i, 60)) {
-                ++$successful;
-            } else {
-                self::assertSame(
-                    MemcachedClient::RES_DATA_EXISTS,
-                    $client->getResultCode(),
-                    \sprintf('racer %d must observe DATA_EXISTS when losing the CAS', $i),
-                );
-            }
-        }
-
-        self::assertSame(1, $successful, 'exactly one concurrent CAS must succeed for a given stale token');
-
-        $writer->delete($key);
+        return 'ignite';
     }
 
-    public function testIncrementUsesOptimisticServerSideArithmetic(): void
+    public function testStaleCasTokenSerialCasSemantics(): void
     {
-        $key = 'pure_ig_incr_atomic_'.bin2hex(random_bytes(8));
+        $this->assertStaleCasTokenAllowsOnlyFirstCasInProcess();
+    }
 
-        $writer = $this->createClient();
-        self::assertTrue($writer->set($key, 0, 60));
+    public function testSequentialIncrementsMatchStoredTotal(): void
+    {
+        $this->assertSequentialIncrementsMatchStoredTotal(clientCount: 4, rounds: 15);
+    }
 
-        $clients = [];
-        for ($i = 0; $i < 4; ++$i) {
-            $clients[$i] = $this->createClient();
-        }
+    public function testMultiProcessCasRaceExactlyOneWinner(): void
+    {
+        $this->assertMultiProcessCasRaceExactlyOneWinner();
+    }
 
-        $total = 0;
-        for ($round = 0; $round < 10; ++$round) {
-            foreach ($clients as $client) {
-                $result = $client->increment($key, 1);
-                self::assertIsInt($result);
-                ++$total;
-            }
-        }
+    public function testMultiProcessIncrementStorm(): void
+    {
+        $this->assertMultiProcessIncrementStorm(workers: 6, roundsPerWorker: 8);
+    }
 
-        self::assertSame($total, $writer->get($key));
-        $writer->delete($key);
+    public function testReadRejectsItemOverOptItemSizeLimit(): void
+    {
+        $this->assertReadRejectsOversizedStoredValue();
     }
 }

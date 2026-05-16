@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <psalm
-    errorLevel="8"
+    errorLevel="2"
     resolveFromConfigFile="true"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xmlns="https://getpsalm.org/schema/config"
@@ -16,6 +16,7 @@
         <file name="../bootstrap-alias.php"/>
         <ignoreFiles allowMissingFiles="true">
             <directory name="../vendor"/>
+            <directory name="../tests/Integration/workers"/>
         </ignoreFiles>
     </projectFiles>
 
@@ -34,6 +35,7 @@
         <PossiblyUnusedMethod>
             <errorLevel type="suppress">
                 <file name="../src/PureCache/CacheClient.php"/>
+                <file name="../src/PureCache/AbstractCacheClient.php"/>
                 <directory name="../tests"/>
             </errorLevel>
         </PossiblyUnusedMethod>

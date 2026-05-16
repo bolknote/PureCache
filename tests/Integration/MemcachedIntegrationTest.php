@@ -8,6 +8,13 @@ use PureCache\Memcached\MemcachedClient;
 
 final class MemcachedIntegrationTest extends MemcachedLikeIntegrationTestCase
 {
+    use BackendContractIntegrationTrait;
+    use MultiProcessConcurrencyTrait;
+    use ReadSizeLimitIntegrationTrait;
+    use SessionLockConcurrencyTrait;
+    use SingleProcessSemanticsIntegrationTrait;
+    use WireSizeLimitIntegrationTrait;
+
     #[\Override]
     protected static function integrationHost(): string
     {
@@ -120,5 +127,46 @@ final class MemcachedIntegrationTest extends MemcachedLikeIntegrationTestCase
             self::assertNotFalse($idx);
             self::assertSame('val-'.$idx, $v);
         }
+    }
+
+    #[\Override]
+    protected function parallelBackendName(): string
+    {
+        return 'memcached';
+    }
+
+    public function testStaleCasTokenSerialCasSemantics(): void
+    {
+        $this->assertStaleCasTokenAllowsOnlyFirstCasInProcess();
+    }
+
+    public function testSequentialIncrementsMatchStoredTotal(): void
+    {
+        $this->assertSequentialIncrementsMatchStoredTotal();
+    }
+
+    public function testMultiProcessCasRaceExactlyOneWinner(): void
+    {
+        $this->assertMultiProcessCasRaceExactlyOneWinner();
+    }
+
+    public function testMultiProcessIncrementStorm(): void
+    {
+        $this->assertMultiProcessIncrementStorm();
+    }
+
+    public function testReadRejectsItemOverOptItemSizeLimit(): void
+    {
+        $this->assertReadRejectsOversizedStoredValue();
+    }
+
+    public function testMultiProcessSessionLockExclusive(): void
+    {
+        $this->assertMultiProcessSessionLockExclusive();
+    }
+
+    public function testWireOversizedVaFromFakeServerIsRejected(): void
+    {
+        $this->assertWireOversizedVaIsRejected();
     }
 }

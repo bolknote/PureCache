@@ -8,7 +8,7 @@ use PureCache\MemcachedConstants;
 
 final class ServerSelector
 {
-    /** @var list<array{host:string,port:int,weight:int,user?:string,password?:string,database?:int}> */
+    /** @var list<array{host:string,port:int,weight:int,user?:string,password?:string,database?:int,tls?:bool,tls_ca_file?:string}> */
     private array $servers = [];
 
     private int $distribution = MemcachedConstants::DISTRIBUTION_MODULA;
@@ -49,7 +49,7 @@ final class ServerSelector
     }
 
     /**
-     * @param array{host:string,port:int,weight:int,user?:string,password?:string,database?:int} $server
+     * @param array{host:string,port:int,weight:int,user?:string,password?:string,database?:int,tls?:bool,tls_ca_file?:string} $server
      */
     public function addServer(array $server): void
     {
@@ -59,7 +59,7 @@ final class ServerSelector
     }
 
     /**
-     * @return list<array{host:string,port:int,weight:int,user?:string,password?:string,database?:int}>
+     * @return list<array{host:string,port:int,weight:int,user?:string,password?:string,database?:int,tls?:bool,tls_ca_file?:string}>
      */
     public function getServers(): array
     {

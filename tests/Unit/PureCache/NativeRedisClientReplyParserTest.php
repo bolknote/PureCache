@@ -61,6 +61,22 @@ final class NativeRedisClientReplyParserTest extends TestCase
         }
     }
 
+    public function testBulkStringLengthIsCapped(): void
+    {
+        $client = new NativeRedisClient('127.0.0.1', 0, 0.0, null, null, null, 8);
+        $stream = $this->attachReadSide($client);
+
+        fwrite($stream, "\$16\r\n");
+
+        try {
+            $this->expectException(\PureCache\Redis\RedisCommandException::class);
+            $this->expectExceptionMessage('item size limit');
+            $this->invokeReadReply($client);
+        } finally {
+            $this->detachStream($client, $stream);
+        }
+    }
+
     public function testRedisErrorReplyIsTranslatedToCommandException(): void
     {
         $client = new NativeRedisClient('127.0.0.1', 0);
@@ -72,6 +88,92 @@ final class NativeRedisClientReplyParserTest extends TestCase
             $this->expectException(\PureCache\Redis\RedisCommandException::class);
             $this->expectExceptionMessage('NOSCRIPT');
             $this->invokeReadReply($client);
+        } finally {
+            $this->detachStream($client, $stream);
+        }
+    }
+
+    public function testIntegerReplyIsParsed(): void
+    {
+        $client = new NativeRedisClient('127.0.0.1', 0);
+        $stream = $this->attachReadSide($client);
+
+        fwrite($stream, ":42\r\n");
+
+        try {
+            self::assertSame(42, $this->invokeReadReply($client));
+        } finally {
+            $this->detachStream($client, $stream);
+        }
+    }
+
+    public function testSimpleStringReplyIsParsed(): void
+    {
+        $client = new NativeRedisClient('127.0.0.1', 0);
+        $stream = $this->attachReadSide($client);
+
+        fwrite($stream, "+OK\r\n");
+
+        try {
+            self::assertSame('OK', $this->invokeReadReply($client));
+        } finally {
+            $this->detachStream($client, $stream);
+        }
+    }
+
+    public function testNullAggregateReplyIsParsed(): void
+    {
+        $client = new NativeRedisClient('127.0.0.1', 0);
+        $stream = $this->attachReadSide($client);
+
+        fwrite($stream, "_\r\n");
+
+        try {
+            self::assertNull($this->invokeReadReply($client));
+        } finally {
+            $this->detachStream($client, $stream);
+        }
+    }
+
+    public function testUnsupportedRespTypeThrows(): void
+    {
+        $client = new NativeRedisClient('127.0.0.1', 0);
+        $stream = $this->attachReadSide($client);
+
+        fwrite($stream, '?');
+
+        try {
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('Unsupported RESP type');
+            $this->invokeReadReply($client);
+        } finally {
+            $this->detachStream($client, $stream);
+        }
+    }
+
+    public function testEmptyArrayReplyIsParsed(): void
+    {
+        $client = new NativeRedisClient('127.0.0.1', 0);
+        $stream = $this->attachReadSide($client);
+
+        fwrite($stream, "*0\r\n");
+
+        try {
+            self::assertSame([], $this->invokeReadReply($client));
+        } finally {
+            $this->detachStream($client, $stream);
+        }
+    }
+
+    public function testNestedArrayReplyIsParsed(): void
+    {
+        $client = new NativeRedisClient('127.0.0.1', 0);
+        $stream = $this->attachReadSide($client);
+
+        fwrite($stream, "*2\r\n\$3\r\nfoo\r\n\$3\r\nbar\r\n");
+
+        try {
+            self::assertSame(['foo', 'bar'], $this->invokeReadReply($client));
         } finally {
             $this->detachStream($client, $stream);
         }

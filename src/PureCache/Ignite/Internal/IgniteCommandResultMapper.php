@@ -41,6 +41,8 @@ final class IgniteCommandResultMapper
             IgniteTransportFailure::NotConnected => MemcachedConstants::RES_CONNECTION_FAILURE,
             IgniteTransportFailure::ReadTruncated,
             IgniteTransportFailure::WriteFailed => MemcachedConstants::RES_READ_FAILURE,
+            IgniteTransportFailure::FrameLengthExceeded,
+            IgniteTransportFailure::FrameLengthInvalid => MemcachedConstants::RES_E2BIG,
             default => MemcachedConstants::RES_FAILURE,
         };
     }

@@ -4,10 +4,17 @@ declare(strict_types=1);
 
 namespace PureCache\Memcached\Internal;
 
+use PureCache\Internal\ItemSizeGuard;
+
 final readonly class MetaReader
 {
-    public function __construct(private StreamConnection $conn)
-    {
+    /** Meta result code surfaced when a {@code VA} body exceeds the read limit. */
+    public const string CODE_ITEM_TOO_BIG = 'E2BIG';
+
+    public function __construct(
+        private StreamConnection $conn,
+        private int $maxBodyBytes = ItemSizeGuard::ABSOLUTE_MAX_BYTES,
+    ) {
     }
 
     /**
@@ -28,27 +35,7 @@ final readonly class MetaReader
         }
 
         if ('VA' === $r->code) {
-            $parts = preg_split('/\s+/', trim($line), -1, \PREG_SPLIT_NO_EMPTY);
-            if (false === $parts) {
-                $parts = [];
-            }
-
-            $size = isset($parts[1]) ? (int) $parts[1] : 0;
-
-            if ($size > 0) {
-                $body = $this->conn->readExact($size);
-                $this->conn->consumeCrLfAfterBody();
-
-                return $expectValueBlock ? $r->withValue($body) : $r;
-            }
-
-            if (0 === $size) {
-                $this->conn->consumeCrLfAfterBody();
-
-                return $expectValueBlock ? $r->withValue('') : $r;
-            }
-
-            return $r;
+            return $this->readVaBlock($line, $r, $expectValueBlock);
         }
 
         return $r;
@@ -71,18 +58,43 @@ final readonly class MetaReader
         }
 
         if ('VA' === $r->code) {
-            $parts = preg_split('/\s+/', trim($line), -1, \PREG_SPLIT_NO_EMPTY);
-            if (false === $parts) {
-                $parts = [];
-            }
-
-            $size = isset($parts[1]) ? (int) $parts[1] : 0;
-            $body = $this->conn->readExact($size);
-            $this->conn->consumeCrLfAfterBody();
-
-            return $r->withValue($body);
+            return $this->readVaBlock($line, $r, true);
         }
 
         return $r;
+    }
+
+    private function readVaBlock(string $line, MetaResult $r, bool $expectValueBlock): MetaResult
+    {
+        $parts = preg_split('/\s+/', trim($line), -1, \PREG_SPLIT_NO_EMPTY);
+        if (false === $parts) {
+            $parts = [];
+        }
+
+        $size = isset($parts[1]) ? (int) $parts[1] : 0;
+        $oversized = ItemSizeGuard::rejectOversizedDeclaredBody($size, $this->maxBodyBytes);
+
+        if ($size > 0) {
+            $body = $this->conn->readExact($size);
+            $this->conn->consumeCrLfAfterBody();
+            if ($oversized) {
+                return $this->itemTooBigResult();
+            }
+
+            return $expectValueBlock ? $r->withValue($body) : $r;
+        }
+
+        if (0 === $size) {
+            $this->conn->consumeCrLfAfterBody();
+
+            return $expectValueBlock ? $r->withValue('') : $r;
+        }
+
+        return $r;
+    }
+
+    private function itemTooBigResult(): MetaResult
+    {
+        return new MetaResult(self::CODE_ITEM_TOO_BIG, [], null, 'ITEM TOO BIG');
     }
 }

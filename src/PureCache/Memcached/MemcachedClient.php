@@ -6,6 +6,7 @@ namespace PureCache\Memcached;
 
 use PureCache\AbstractCacheClient;
 use PureCache\Internal\CacheEntry;
+use PureCache\Internal\ItemSizeGuard;
 use PureCache\Internal\PersistentStateRegistry;
 use PureCache\Internal\StoreMode;
 use PureCache\Internal\ValueCodec;
@@ -113,7 +114,7 @@ final class MemcachedClient extends AbstractCacheClient
             $c = $this->core()->conn->get($idx);
             $this->send($c, MetaCommandBuilder::metaGetValue($pk));
 
-            $reader = new MetaReader($c);
+            $reader = $this->metaReader($c);
             $item = $this->readDecodedMetaValue($reader);
             if (false === $item) {
                 return false;
@@ -156,7 +157,7 @@ final class MemcachedClient extends AbstractCacheClient
                         $this->send($c, MetaCommandBuilder::metaGetValue($pk));
                     }
 
-                    $reader = new MetaReader($c);
+                    $reader = $this->metaReader($c);
                     foreach ($slice as [$orig]) {
                         $item = $this->readDecodedMetaValue($reader);
                         if (false === $item) {
@@ -224,7 +225,7 @@ final class MemcachedClient extends AbstractCacheClient
                         $this->send($c, MetaCommandBuilder::metaGetValue($pk));
                     }
 
-                    $reader = new MetaReader($c);
+                    $reader = $this->metaReader($c);
                     foreach ($slice as [$orig]) {
                         $item = $this->readDecodedMetaValue($reader);
                         if (false === $item) {
@@ -270,7 +271,7 @@ final class MemcachedClient extends AbstractCacheClient
                         $this->send($c, MetaCommandBuilder::metaGetValue($pk));
                     }
 
-                    $reader = new MetaReader($c);
+                    $reader = $this->metaReader($c);
                     foreach ($slice as [$orig]) {
                         $item = $this->readDecodedMetaValue($reader);
                         if (false === $item) {
@@ -333,7 +334,7 @@ final class MemcachedClient extends AbstractCacheClient
                     return true;
                 }
 
-                $reader = new MetaReader($c);
+                $reader = $this->metaReader($c);
                 $r = $reader->readOne(false);
 
                 return $this->mapStoreResult($r);
@@ -423,7 +424,7 @@ final class MemcachedClient extends AbstractCacheClient
                     continue;
                 }
 
-                $reader = new MetaReader($c);
+                $reader = $this->metaReader($c);
                 foreach ($entries as $entry) {
                     // Replica reply is consumed only to keep the pipeline
                     // aligned; its outcome must not leak into resultCode.
@@ -467,7 +468,7 @@ final class MemcachedClient extends AbstractCacheClient
                 return $this->okResult(self::RES_SUCCESS);
             }
 
-            $reader = new MetaReader($c);
+            $reader = $this->metaReader($c);
             $r = $reader->readOne(false);
             if ($this->applyMetaWireError($r)) {
                 return false;
@@ -497,7 +498,7 @@ final class MemcachedClient extends AbstractCacheClient
                         return $this->okResult(self::RES_SUCCESS);
                     }
 
-                    $reader = new MetaReader($c);
+                    $reader = $this->metaReader($c);
                     $r = $reader->readOne(false);
                 } catch (\Throwable $throwable) {
                     $this->recordServerFailure($idx, $throwable);
@@ -540,8 +541,14 @@ final class MemcachedClient extends AbstractCacheClient
                 $autoCreate ? $initialValue : null,
                 $autoCreate ? $expiry : null,
             ));
-            $reader = new MetaReader($c);
+            $reader = $this->metaReader($c);
             $r = $reader->readArithmeticValue();
+            if (MetaReader::CODE_ITEM_TOO_BIG === $r->code) {
+                $this->setResult(self::RES_E2BIG, $r->errorMessage);
+
+                return false;
+            }
+
             if ($this->applyMetaWireError($r)) {
                 return false;
             }
@@ -757,6 +764,14 @@ final class MemcachedClient extends AbstractCacheClient
         $this->setResult($code, $r->errorMessage);
 
         return true;
+    }
+
+    private function metaReader(StreamConnection $c): MetaReader
+    {
+        return new MetaReader(
+            $c,
+            ItemSizeGuard::effectiveReadLimit($this->optionInt(self::OPT_ITEM_SIZE_LIMIT, 0)),
+        );
     }
 
     private function readDecodedMetaValue(MetaReader $reader): DecodedMetaValue|false

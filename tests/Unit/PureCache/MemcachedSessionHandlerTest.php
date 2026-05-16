@@ -193,6 +193,123 @@ final class MemcachedSessionHandlerTest extends TestCase
         self::assertSame('sid-ts', $touchCalls[0]['key'] ?? null);
     }
 
+    public function testReadWithoutOpenReturnsFalse(): void
+    {
+        $handler = new MemcachedSessionHandler();
+        self::assertFalse(@$handler->read('orphan'));
+    }
+
+    public function testWriteSuccessOnSpyBackend(): void
+    {
+        $spy = new SessionSpyCacheClient();
+        $spy->setReturnStream = [true];
+
+        $handler = new MemcachedSessionHandler($spy);
+        self::assertTrue($handler->open('127.0.0.1:11211', 'PHPSESSID'));
+        self::assertTrue($handler->write('sid-ok', 'stored'));
+    }
+
+    public function testReadSurfacesBackendFailure(): void
+    {
+        $spy = new SessionSpyCacheClient();
+        $spy->getPayload = null;
+        $spy->getResultCodeStream = [MemcachedConstants::RES_FAILURE];
+
+        $handler = new MemcachedSessionHandler($spy);
+        self::assertTrue($handler->open('127.0.0.1:11211', 'PHPSESSID'));
+
+        self::assertFalse(@$handler->read('sid-fail'));
+    }
+
+    public function testWriteWithoutOpenReturnsFalse(): void
+    {
+        $handler = new MemcachedSessionHandler();
+        self::assertFalse(@$handler->write('sid', 'data'));
+    }
+
+    public function testDestroyWithoutOpenReturnsFalse(): void
+    {
+        $handler = new MemcachedSessionHandler();
+        self::assertFalse(@$handler->destroy('sid'));
+    }
+
+    public function testOpenReusesPersistentClientFromStaticPool(): void
+    {
+        $spy = new SessionSpyCacheClient();
+        $spy->getPayload = 'data';
+
+        $path = '127.0.0.1:11211';
+
+        $pool = new \ReflectionProperty(MemcachedSessionHandler::class, 'persistentClients');
+        $pool->setValue(null, [$path => $spy]);
+
+        $handler = new MemcachedSessionHandler();
+        $this->patchHandlerIni($handler, ['persistent_enabled' => true]);
+
+        self::assertTrue($handler->open($path, 'PHPSESSID'));
+        self::assertTrue($handler->write('sid-persist', 'data'));
+        self::assertSame('data', $handler->read('sid-persist'));
+        self::assertTrue($handler->close());
+
+        $pool->setValue(null, []);
+    }
+
+    public function testWriteRetriesWhenRemoveFailedServersIniEnabled(): void
+    {
+        $spy = new SessionSpyCacheClient();
+        $spy->setReturnStream = [false, false, true];
+
+        $handler = new MemcachedSessionHandler($spy);
+        $this->patchHandlerIni($handler, [
+            'remove_failed_servers_enabled' => true,
+            'number_of_replicas' => 1,
+            'server_failure_limit' => 1,
+        ]);
+
+        self::assertTrue($handler->open('127.0.0.1:11211', 'PHPSESSID'));
+        self::assertTrue(@$handler->write('sid-retry', 'payload'));
+
+        $setCalls = array_values(array_filter($spy->calls, static fn (array $c): bool => 'set' === $c['method']));
+        self::assertGreaterThanOrEqual(2, \count($setCalls));
+    }
+
+    public function testOpenFailsWhenSaslConfiguredInIniSnapshot(): void
+    {
+        $handler = new MemcachedSessionHandler(new SessionSpyCacheClient());
+        $this->patchHandlerIni($handler, [
+            'sasl_username' => 'user',
+            'sasl_password' => 'secret',
+        ]);
+
+        self::assertFalse(@$handler->open('127.0.0.1:11211', 'PHPSESSID'));
+    }
+
+    public function testLockFailureOnUnexpectedAddResultCode(): void
+    {
+        $spy = new SessionSpyCacheClient();
+        $spy->addReturnStream = array_fill(0, 32, false);
+        $spy->addResultCodeStream = array_fill(0, 32, MemcachedConstants::RES_FAILURE);
+
+        $handler = new MemcachedSessionHandler($spy);
+        self::assertTrue($handler->open('127.0.0.1:11211', 'PHPSESSID'));
+
+        self::assertFalse(@$handler->read('sid-lock-fail'));
+    }
+
+    /**
+     * @param array<string, mixed> $patch
+     */
+    private function patchHandlerIni(MemcachedSessionHandler $handler, array $patch): void
+    {
+        $ini = new \ReflectionProperty(MemcachedSessionHandler::class, 'ini');
+        $snapshot = $ini->getValue($handler);
+        if (!\is_array($snapshot)) {
+            self::fail('ini snapshot must be an array');
+        }
+
+        $ini->setValue($handler, array_replace($snapshot, $patch));
+    }
+
     /**
      * @param list<array{method:string,key?:string,value?:mixed,expiration?:int,option?:int}> $calls
      *

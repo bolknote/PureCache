@@ -24,6 +24,10 @@ final class MetaValueReader
         ?EncodingContext $encoding = null,
     ): DecodedMetaValue {
         $result = $reader->readOne(true);
+        if (MetaReader::CODE_ITEM_TOO_BIG === $result->code) {
+            return DecodedMetaValue::failure(MemcachedConstants::RES_E2BIG, $result->errorMessage);
+        }
+
         $wire = $result->wireErrorResultCode();
         if (null !== $wire) {
             return DecodedMetaValue::failure($wire, $result->errorMessage);

@@ -76,6 +76,45 @@ final class InternalComponentsTest extends TestCase
         self::assertSame(MemcachedClient::HASH_MD5, $core->options[MemcachedClient::OPT_HASH]);
     }
 
+    public function testOptionApplierRejectsNonIntegerSelectorValues(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_HASH, ['not-an-int'], $this->fakeEnv());
+
+        self::assertFalse($result->ok);
+        self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $result->code);
+    }
+
+    public function testOptionApplierRejectsInvalidPrefixKeys(): void
+    {
+        $core = MemcachedClientCore::createFresh();
+
+        $result = ClientOptionApplier::apply($core, MemcachedClient::OPT_PREFIX_KEY, 'bad key', $this->fakeEnv());
+
+        self::assertFalse($result->ok);
+        self::assertSame(MemcachedClient::RES_BAD_KEY_PROVIDED, $result->code);
+    }
+
+    public function testEncodingModeOptionRequiresOpenSsl(): void
+    {
+        if (\extension_loaded('openssl')) {
+            self::markTestSkipped('openssl is available');
+        }
+
+        $core = MemcachedClientCore::createFresh();
+        $result = ClientOptionApplier::apply(
+            $core,
+            MemcachedClient::OPT_ENCODING_MODE,
+            MemcachedClient::ENCODING_MODE_AEAD,
+            $this->fakeEnv(),
+        );
+
+        self::assertFalse($result->ok);
+        self::assertSame(MemcachedClient::RES_NOT_SUPPORTED, $result->code);
+        self::assertSame('encoding modes require ext-openssl', $result->message);
+    }
+
     private function fakeEnv(): OptionEnvironment
     {
         return new class implements OptionEnvironment {

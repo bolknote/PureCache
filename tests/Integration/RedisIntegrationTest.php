@@ -9,6 +9,16 @@ use PureCache\Redis\RedisClient;
 
 final class RedisIntegrationTest extends MemcachedLikeIntegrationTestCase
 {
+    use BackendContractIntegrationTrait;
+    use MultiProcessConcurrencyTrait;
+    use ReadSizeLimitIntegrationTrait;
+    use SingleProcessSemanticsIntegrationTrait;
+
+    protected function contractExpectsFlushDelaySupport(): bool
+    {
+        return false;
+    }
+
     #[\Override]
     protected static function integrationHost(): string
     {
@@ -44,40 +54,15 @@ final class RedisIntegrationTest extends MemcachedLikeIntegrationTestCase
         return $m;
     }
 
-    public function testConcurrentCasRaceLetsExactlyOneWriterWin(): void
+    #[\Override]
+    protected function parallelBackendName(): string
     {
-        $key = 'pure_cas_race_'.bin2hex(random_bytes(8));
+        return 'redis';
+    }
 
-        $writer = $this->createClient();
-        self::assertTrue($writer->set($key, 'seed', 60));
-
-        $reader = $this->createClient();
-        $ext = $reader->get($key, null, MemcachedClient::GET_EXTENDED);
-        self::assertIsArray($ext);
-        $cas = $ext['cas'];
-        self::assertIsInt($cas);
-
-        $racers = [];
-        for ($i = 0; $i < 8; ++$i) {
-            $racers[$i] = $this->createClient();
-        }
-
-        $successful = 0;
-        foreach ($racers as $i => $client) {
-            if ($client->cas($cas, $key, 'winner-'.$i, 60)) {
-                ++$successful;
-            } else {
-                self::assertSame(
-                    MemcachedClient::RES_DATA_EXISTS,
-                    $client->getResultCode(),
-                    \sprintf('racer %d must observe DATA_EXISTS when losing the CAS', $i),
-                );
-            }
-        }
-
-        self::assertSame(1, $successful, 'exactly one concurrent CAS must succeed for a given stale token');
-
-        $writer->delete($key);
+    public function testStaleCasTokenSerialCasSemantics(): void
+    {
+        $this->assertStaleCasTokenAllowsOnlyFirstCasInProcess();
     }
 
     public function testStoredFieldsRemainConsistentAcrossWriters(): void
@@ -110,27 +95,17 @@ final class RedisIntegrationTest extends MemcachedLikeIntegrationTestCase
 
     public function testIncrementUsesServerSideAtomicArithmetic(): void
     {
-        $key = 'pure_incr_atomic_'.bin2hex(random_bytes(8));
+        $this->assertSequentialIncrementsMatchStoredTotal();
+    }
 
-        $writer = $this->createClient();
-        self::assertTrue($writer->set($key, 0, 60));
+    public function testMultiProcessCasRaceExactlyOneWinner(): void
+    {
+        $this->assertMultiProcessCasRaceExactlyOneWinner();
+    }
 
-        $clients = [];
-        for ($i = 0; $i < 6; ++$i) {
-            $clients[$i] = $this->createClient();
-        }
-
-        $total = 0;
-        for ($round = 0; $round < 20; ++$round) {
-            foreach ($clients as $client) {
-                $result = $client->increment($key, 1);
-                self::assertIsInt($result);
-                ++$total;
-            }
-        }
-
-        self::assertSame($total, $writer->get($key));
-        $writer->delete($key);
+    public function testMultiProcessIncrementStorm(): void
+    {
+        $this->assertMultiProcessIncrementStorm();
     }
 
     public function testCasOnAddedKeyStartsCasFromOne(): void
@@ -216,5 +191,34 @@ final class RedisIntegrationTest extends MemcachedLikeIntegrationTestCase
         }
 
         self::fail('failed to find two route keys mapped to different Redis servers');
+    }
+
+    public function testRedissConnectionStringUsesTls(): void
+    {
+        $tlsPort = getenv('REDIS_TLS_TEST_PORT');
+        $caFile = getenv('REDIS_TLS_CA_FILE');
+        if (!\is_string($tlsPort) || '' === $tlsPort || !\is_string($caFile) || '' === $caFile || !is_file($caFile)) {
+            self::markTestSkipped('REDIS_TLS_TEST_PORT and REDIS_TLS_CA_FILE are required for TLS integration');
+        }
+
+        $host = self::integrationHost();
+        $client = new RedisClient();
+        self::assertTrue($client->addServers([[
+            'host' => $host,
+            'port' => (int) $tlsPort,
+            'weight' => 0,
+            'tls' => true,
+            'tls_ca_file' => $caFile,
+        ]]));
+
+        $key = 'pure_rediss_'.bin2hex(random_bytes(8));
+        self::assertTrue($client->set($key, 'tls-ok', 60));
+        self::assertSame('tls-ok', $client->get($key));
+        $client->delete($key);
+    }
+
+    public function testReadRejectsItemOverOptItemSizeLimit(): void
+    {
+        $this->assertReadRejectsOversizedStoredValue();
     }
 }
