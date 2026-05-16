@@ -7,6 +7,7 @@ namespace PureCache\Tests\Unit\PureCache\Internal;
 use PHPUnit\Framework\TestCase;
 use PureCache\Internal\ClientCoordinatorEnv;
 use PureCache\Internal\ClientHealthRecorder;
+use PureCache\Internal\ServerAvailability;
 use PureCache\Memcached\Internal\MemcachedClientCore;
 
 final class ClientHealthRecorderTest extends TestCase
@@ -33,15 +34,21 @@ final class ClientHealthRecorderTest extends TestCase
         self::assertNull($core->lastDisconnectedServer);
     }
 
-    public function testRecordServerSuccessIgnoresNullIndex(): void
+    public function testRecordServerSuccessIgnoresNullAndNegativeIndex(): void
     {
         $core = MemcachedClientCore::createFresh();
+        $core->selector->addServer(['host' => 'solo', 'port' => 11211, 'weight' => 1]);
+        $core->failureTracker->setFailureLimit(1);
+        $core->failureTracker->setDeadTimeoutSec(60);
+        $core->failureTracker->recordFailure(0, false);
+
         $recorder = new ClientHealthRecorder($this->env($core));
 
         $recorder->recordServerSuccess(null);
         $recorder->recordServerSuccess(-1);
 
         self::assertNull($core->lastDisconnectedServer);
+        self::assertSame(ServerAvailability::TemporarilyDisabled, $core->failureTracker->availability(0));
     }
 
     private function env(MemcachedClientCore $core): ClientCoordinatorEnv
