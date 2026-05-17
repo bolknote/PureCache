@@ -185,12 +185,18 @@ final class ClientOptions
     public static function defaultSerializer(): int
     {
         if (\extension_loaded('memcached')) {
-            /** @psalm-suppress RedundantCondition */
+            /**
+             * @psalm-suppress RedundantCondition
+             * @psalm-suppress TypeDoesNotContainType
+             */
             if (\Memcached::HAVE_IGBINARY && self::serializerIsUsable(MemcachedConstants::SERIALIZER_IGBINARY)) {
                 return MemcachedConstants::SERIALIZER_IGBINARY;
             }
 
-            /** @psalm-suppress RedundantCondition */
+            /**
+             * @psalm-suppress RedundantCondition
+             * @psalm-suppress TypeDoesNotContainType
+             */
             if (\Memcached::HAVE_MSGPACK && self::serializerIsUsable(MemcachedConstants::SERIALIZER_MSGPACK)) {
                 return MemcachedConstants::SERIALIZER_MSGPACK;
             }
