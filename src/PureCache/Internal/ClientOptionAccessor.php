@@ -25,7 +25,7 @@ final readonly class ClientOptionAccessor
     {
         if (
             MemcachedConstants::OPT_LIBKETAMA_HASH === $option
-            && !LibketamaHashOptionParity::setterUpdatesStoredKetamaGetter()
+            && !LibketamaHashOptionParity::libketamaGetterUsesStoredSlot()
         ) {
             $option = MemcachedConstants::OPT_HASH;
         }

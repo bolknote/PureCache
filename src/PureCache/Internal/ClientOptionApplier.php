@@ -206,9 +206,7 @@ final class ClientOptionApplier
             return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
         }
 
-        if (LibketamaHashOptionParity::setterUpdatesStoredKetamaGetter()) {
-            $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = $hash;
-        }
+        $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = $hash;
 
         return ClientOptionResult::success();
     }

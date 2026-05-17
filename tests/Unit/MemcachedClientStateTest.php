@@ -506,10 +506,13 @@ final class MemcachedClientStateTest extends TestCase
         self::assertSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
         self::assertSame(MemcachedClient::HASH_MURMUR, $client->getOption(MemcachedClient::OPT_HASH));
 
-        $expectedLibketama = LibketamaHashOptionParity::setterUpdatesStoredKetamaGetter()
-            ? ClientOptions::peclLongValue($value)
-            : MemcachedClient::HASH_MURMUR;
-        self::assertSame($expectedLibketama, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
+        self::assertSame(
+            LibketamaHashOptionParity::expectedGetterAfterLibketamaSetter(
+                $value,
+                MemcachedClient::HASH_MURMUR,
+            ),
+            $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH),
+        );
     }
 
     /**
