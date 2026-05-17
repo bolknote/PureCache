@@ -36,10 +36,10 @@ final class ClientOptionsTest extends TestCase
     public function testDefaultSerializerFollowsPeclPrecedence(): void
     {
         $expected = match (true) {
-            \extension_loaded('memcached') && \Memcached::HAVE_IGBINARY => MemcachedConstants::SERIALIZER_IGBINARY,
-            \extension_loaded('memcached') && \Memcached::HAVE_MSGPACK => MemcachedConstants::SERIALIZER_MSGPACK,
-            \extension_loaded('igbinary') => MemcachedConstants::SERIALIZER_IGBINARY,
-            \extension_loaded('msgpack') => MemcachedConstants::SERIALIZER_MSGPACK,
+            \extension_loaded('memcached') && \Memcached::HAVE_IGBINARY && ClientOptions::serializerIsUsable(MemcachedConstants::SERIALIZER_IGBINARY) => MemcachedConstants::SERIALIZER_IGBINARY,
+            \extension_loaded('memcached') && \Memcached::HAVE_MSGPACK && ClientOptions::serializerIsUsable(MemcachedConstants::SERIALIZER_MSGPACK) => MemcachedConstants::SERIALIZER_MSGPACK,
+            ClientOptions::serializerIsUsable(MemcachedConstants::SERIALIZER_IGBINARY) => MemcachedConstants::SERIALIZER_IGBINARY,
+            ClientOptions::serializerIsUsable(MemcachedConstants::SERIALIZER_MSGPACK) => MemcachedConstants::SERIALIZER_MSGPACK,
             default => MemcachedConstants::SERIALIZER_PHP,
         };
 

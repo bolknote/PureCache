@@ -1103,14 +1103,14 @@ final class MemcachedClientStateTest extends TestCase
         $client = new MemcachedClient();
         $tested = false;
 
-        if (!\extension_loaded('igbinary')) {
+        if (!ClientOptions::serializerIsUsable(MemcachedClient::SERIALIZER_IGBINARY)) {
             self::assertFalse($client->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_IGBINARY));
             self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
             self::assertSame(ClientOptions::defaultSerializer(), $client->getOption(MemcachedClient::OPT_SERIALIZER));
             $tested = true;
         }
 
-        if (!\extension_loaded('msgpack')) {
+        if (!ClientOptions::serializerIsUsable(MemcachedClient::SERIALIZER_MSGPACK)) {
             self::assertFalse($client->setOption(MemcachedClient::OPT_SERIALIZER, MemcachedClient::SERIALIZER_MSGPACK));
             self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
             self::assertSame(ClientOptions::defaultSerializer(), $client->getOption(MemcachedClient::OPT_SERIALIZER));
@@ -1124,8 +1124,8 @@ final class MemcachedClientStateTest extends TestCase
 
     public function testAvailableIgbinarySerializerCanBeSelected(): void
     {
-        if (!\extension_loaded('igbinary')) {
-            self::markTestSkipped('igbinary is not loaded');
+        if (!ClientOptions::serializerIsUsable(MemcachedClient::SERIALIZER_IGBINARY)) {
+            self::markTestSkipped('igbinary serialize functions are not available');
         }
 
         $client = new MemcachedClient();

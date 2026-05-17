@@ -232,11 +232,7 @@ final class ClientOptionApplier
             return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
         }
 
-        if (MemcachedConstants::SERIALIZER_IGBINARY === $serializer && !\extension_loaded('igbinary')) {
-            return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
-        }
-
-        if (MemcachedConstants::SERIALIZER_MSGPACK === $serializer && !\extension_loaded('msgpack')) {
+        if (!ClientOptions::serializerIsUsable($serializer)) {
             return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
         }
 

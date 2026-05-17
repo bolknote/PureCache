@@ -153,6 +153,28 @@ final class ClientOptions
     }
 
     /**
+     * Whether the serializer can actually encode/decode on this runtime.
+     *
+     * PECL only checks compile-time {@code HAVE_*}, but PHP's
+     * {@code disable_functions} can block {@code igbinary_*}/{@code msgpack_*}
+     * while the extension remains loaded — we mirror {@code function_exists()}
+     * so defaults and {@code setOption()} do not pick an unusable codec.
+     */
+    public static function serializerIsUsable(int $serializer): bool
+    {
+        return match ($serializer) {
+            MemcachedConstants::SERIALIZER_IGBINARY => \function_exists('igbinary_serialize')
+                && \function_exists('igbinary_unserialize'),
+            MemcachedConstants::SERIALIZER_MSGPACK => \function_exists('msgpack_pack')
+                && \function_exists('msgpack_unpack'),
+            MemcachedConstants::SERIALIZER_PHP,
+            MemcachedConstants::SERIALIZER_JSON,
+            MemcachedConstants::SERIALIZER_JSON_ARRAY => true,
+            default => false,
+        };
+    }
+
+    /**
      * Picks the {@code memcached.serializer} INI default the same way PECL does
      * at compile time ({@code SERIALIZER_DEFAULT} in
      * {@code php_memcached_private.h}): igbinary when built with
@@ -164,23 +186,23 @@ final class ClientOptions
     {
         if (\extension_loaded('memcached')) {
             /** @psalm-suppress RedundantCondition */
-            if (\Memcached::HAVE_IGBINARY) {
+            if (\Memcached::HAVE_IGBINARY && self::serializerIsUsable(MemcachedConstants::SERIALIZER_IGBINARY)) {
                 return MemcachedConstants::SERIALIZER_IGBINARY;
             }
 
             /** @psalm-suppress RedundantCondition */
-            if (\Memcached::HAVE_MSGPACK) {
+            if (\Memcached::HAVE_MSGPACK && self::serializerIsUsable(MemcachedConstants::SERIALIZER_MSGPACK)) {
                 return MemcachedConstants::SERIALIZER_MSGPACK;
             }
 
             return MemcachedConstants::SERIALIZER_PHP;
         }
 
-        if (\extension_loaded('igbinary')) {
+        if (self::serializerIsUsable(MemcachedConstants::SERIALIZER_IGBINARY)) {
             return MemcachedConstants::SERIALIZER_IGBINARY;
         }
 
-        if (\extension_loaded('msgpack')) {
+        if (self::serializerIsUsable(MemcachedConstants::SERIALIZER_MSGPACK)) {
             return MemcachedConstants::SERIALIZER_MSGPACK;
         }
 
