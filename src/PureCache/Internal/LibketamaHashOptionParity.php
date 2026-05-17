@@ -24,7 +24,7 @@ final class LibketamaHashOptionParity
             return self::$setterUpdatesStoredKetamaGetter;
         }
 
-        if (!\extension_loaded('memcached') || !\class_exists(\Memcached::class, false)) {
+        if (!\extension_loaded('memcached') || !class_exists(\Memcached::class, false)) {
             self::$setterUpdatesStoredKetamaGetter = false;
 
             return self::$setterUpdatesStoredKetamaGetter;
