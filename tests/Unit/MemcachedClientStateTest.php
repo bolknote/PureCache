@@ -9,6 +9,7 @@ use PureCache\AbstractCacheClient;
 use PureCache\Internal\CacheEntry;
 use PureCache\Internal\ClientOptions;
 use PureCache\Internal\IniConfig;
+use PureCache\Internal\LibketamaHashOptionParity;
 use PureCache\Memcached\MemcachedClient;
 
 final class MemcachedClientStateTest extends TestCase
@@ -488,9 +489,10 @@ final class MemcachedClientStateTest extends TestCase
      * PECL routes OPT_LIBKETAMA_HASH through {@code zval_get_long()} →
      * libmemcached → hashkit. Hashkit accepts every coerced long except
      * HASH_HSIEH (PECL builds without HAVE_HSIEH_HASH), and the dial
-     * never changes routing — the getter still reports {@code OPT_HASH} on
-     * ext-memcached 3.4.x. Mirror that no-op-success contract so callers
-     * porting from ext-memcached see identical setOption returns.
+     * never changes routing. On ext-memcached 3.4.x the getter still reports
+     * {@code OPT_HASH}; on older builds it surfaces the coerced ketama value.
+     * Mirror that no-op-success contract so callers porting from ext-memcached
+     * see identical setOption returns.
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('libketamaHashAcceptedValues')]
     public function testLibketamaHashSetterAcceptsAnyPeclCoercibleValueAsNoop(mixed $value): void
@@ -503,7 +505,11 @@ final class MemcachedClientStateTest extends TestCase
         self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, $value));
         self::assertSame(MemcachedClient::RES_SUCCESS, $client->getResultCode());
         self::assertSame(MemcachedClient::HASH_MURMUR, $client->getOption(MemcachedClient::OPT_HASH));
-        self::assertSame(MemcachedClient::HASH_MURMUR, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
+
+        $expectedLibketama = LibketamaHashOptionParity::setterUpdatesStoredKetamaGetter()
+            ? ClientOptions::peclLongValue($value)
+            : MemcachedClient::HASH_MURMUR;
+        self::assertSame($expectedLibketama, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
     }
 
     /**
