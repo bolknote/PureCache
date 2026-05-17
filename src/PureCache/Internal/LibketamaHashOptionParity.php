@@ -23,11 +23,15 @@ final class LibketamaHashOptionParity
     /**
      * When false, {@code getOption(OPT_LIBKETAMA_HASH)} should read-alias
      * {@code OPT_HASH}; when true, return the stored ketama dial.
+     *
+     * Which PECL probe applies depends on whether
+     * {@code OPT_LIBKETAMA_COMPATIBLE} is already enabled on the client.
      */
-    public static function libketamaGetterUsesStoredSlot(): bool
+    public static function libketamaGetterUsesStoredSlot(bool $libketamaCompatibleEnabled): bool
     {
-        return self::setterUpdatesStoredKetamaGetter()
-            || self::setterSurfacesCoercedGetterWithoutCompat();
+        return $libketamaCompatibleEnabled
+            ? self::setterUpdatesStoredKetamaGetter()
+            : self::setterSurfacesCoercedGetterWithoutCompat();
     }
 
     public static function setterUpdatesStoredKetamaGetter(): bool
@@ -95,7 +99,7 @@ final class LibketamaHashOptionParity
             return $integer ?? $anchoredHash;
         }
 
-        return self::libketamaGetterUsesStoredSlot()
+        return self::libketamaGetterUsesStoredSlot(false)
             ? ClientOptions::peclLongValue($value)
             : $anchoredHash;
     }
