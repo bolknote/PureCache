@@ -55,13 +55,6 @@ abstract class ClientCoreState
 
     public ?ClientObserver $observer = null;
 
-    /**
-     * Set when {@code setOption(OPT_LIBKETAMA_HASH)} runs; cleared on
-     * {@code OPT_HASH} / {@code OPT_LIBKETAMA_COMPATIBLE} changes. Until then
-     * {@code getOption(OPT_LIBKETAMA_HASH)} tracks {@code OPT_HASH} like PECL.
-     */
-    public bool $libketamaHashDialTouched = false;
-
     protected function __construct(?string $persistentId = null)
     {
         $this->initDefaults($persistentId);
@@ -75,7 +68,6 @@ abstract class ClientCoreState
         $this->selector->setFailureTracker($this->failureTracker);
 
         $this->options = ClientOptions::defaults();
-        $this->libketamaHashDialTouched = false;
         $this->resultCode = MemcachedConstants::RES_SUCCESS;
         $this->resultMessage = '';
     }

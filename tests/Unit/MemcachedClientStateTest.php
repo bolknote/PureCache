@@ -437,9 +437,13 @@ final class MemcachedClientStateTest extends TestCase
 
     /**
      * PECL surfaces {@code OPT_LIBKETAMA_HASH} via libmemcached's separate
-     * {@code MEMCACHED_BEHAVIOR_KETAMA_HASH} dial. It tracks {@code OPT_HASH}
-     * only on a fresh client and after the {@code OPT_LIBKETAMA_COMPATIBLE}
-     * cascade — direct {@code OPT_HASH} writes do not move the ketama getter.
+     * {@code MEMCACHED_BEHAVIOR_KETAMA_HASH} dial. Whether the getter aliases
+     * {@code OPT_HASH} on a fresh, dial-untouched client depends on the
+     * loaded libmemcached build (macOS libmemcached aliases; Linux
+     * libmemcached 1.x keeps the slots independent). The
+     * {@code OPT_LIBKETAMA_COMPATIBLE} cascade then explicitly drives the
+     * dial to {@code HASH_MD5}, and turning compatible mode off resets it
+     * back to {@code HASH_DEFAULT}.
      */
     public function testLibketamaHashGetterTracksOptHashAcrossCascade(): void
     {
@@ -452,7 +456,11 @@ final class MemcachedClientStateTest extends TestCase
 
         self::assertTrue($client->setOption(MemcachedClient::OPT_HASH, MemcachedClient::HASH_CRC));
         self::assertSame(MemcachedClient::HASH_CRC, $client->getOption(MemcachedClient::OPT_HASH));
-        self::assertSame(MemcachedClient::HASH_CRC, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
+
+        $expectedAfterOptHashChange = LibketamaHashOptionParity::peclAliasesOptHashIntoKetamaGetter()
+            ? MemcachedClient::HASH_CRC
+            : MemcachedClient::HASH_DEFAULT;
+        self::assertSame($expectedAfterOptHashChange, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
 
         self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_COMPATIBLE, true));
         self::assertSame(MemcachedClient::HASH_MD5, $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH));
@@ -540,36 +548,6 @@ final class MemcachedClientStateTest extends TestCase
 
         self::assertFalse($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, $value));
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
-    }
-
-    public function testLibketamaHashSetterNormalizesOutOfRangeValuesWhenPeclSurfacesStoredDial(): void
-    {
-        $surfacesStoredDial = new \ReflectionProperty(
-            LibketamaHashOptionParity::class,
-            'setterSurfacesCoercedGetterWithoutCompat',
-        );
-        $previous = $surfacesStoredDial->getValue();
-        $surfacesStoredDial->setValue(null, true);
-
-        try {
-            foreach ([9999, -3] as $value) {
-                $client = new MemcachedClient();
-                self::assertTrue($client->setOption(MemcachedClient::OPT_HASH, MemcachedClient::HASH_MURMUR));
-                self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, $value));
-                self::assertSame(
-                    MemcachedClient::HASH_DEFAULT,
-                    $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH),
-                );
-
-                self::assertTrue($client->setOption(MemcachedClient::OPT_HASH, MemcachedClient::HASH_CRC));
-                self::assertSame(
-                    MemcachedClient::HASH_CRC,
-                    $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH),
-                );
-            }
-        } finally {
-            $surfacesStoredDial->setValue(null, $previous);
-        }
     }
 
     /**

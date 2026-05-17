@@ -122,7 +122,6 @@ final class ClientOptionApplier
 
     private static function applyLibketamaCompatible(ClientCoreState $core, bool $enabled): void
     {
-        $core->libketamaHashDialTouched = false;
         $core->options[MemcachedConstants::OPT_LIBKETAMA_COMPATIBLE] = $enabled;
         $core->selector->setLibketamaCompatible($enabled);
         if ($enabled) {
@@ -165,19 +164,13 @@ final class ClientOptionApplier
             return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
         }
 
-        if (MemcachedConstants::OPT_HASH === $option) {
-            // PECL mirrors OPT_HASH into the ketama getter on hash changes until
-            // setOption(OPT_LIBKETAMA_HASH) touches the dial (LibketamaHashOptionParity).
-            $core->libketamaHashDialTouched = false;
-            $core->options[MemcachedConstants::OPT_HASH] = $integer;
-            $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = $integer;
-
-            $selectorSetter($integer);
-            $env->onPoolInvalidated();
-
-            return ClientOptionResult::success();
-        }
-
+        // Note: OPT_HASH and OPT_LIBKETAMA_HASH back two independent
+        // libmemcached behaviors (MEMCACHED_BEHAVIOR_HASH vs
+        // MEMCACHED_BEHAVIOR_KETAMA_HASH). Setting OPT_HASH must not touch
+        // the ketama dial; whether the getter then reads the stored slot or
+        // aliases OPT_HASH is decided at read time by
+        // LibketamaHashOptionParity::resolveLibketamaHashGetter() based
+        // on the loaded ext-memcached/libmemcached build.
         $core->options[$option] = $integer;
 
         $selectorSetter($integer);
@@ -200,12 +193,6 @@ final class ClientOptionApplier
      *     {@code HASH_HSIEH}, which PECL builds without
      *     ({@code HAVE_HSIEH_HASH=disabled}) and the hashkit setter therefore
      *     rejects with {@code INVALID_ARGUMENT}.
-     *
-     * Empirically the dial does not move keys around (routing is driven by
-     * {@code OPT_HASH}). On ext-memcached 3.4.x the getter keeps tracking
-     * {@code OPT_HASH}; on older builds it surfaces the coerced ketama value.
-     * PureCache mirrors the loaded extension via
-     * {@see LibketamaHashOptionParity::setterUpdatesStoredKetamaGetter()}.
      */
     private static function applyLibketamaHash(ClientCoreState $core, mixed $value): ClientOptionResult
     {
@@ -215,24 +202,9 @@ final class ClientOptionApplier
             return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
         }
 
-        $core->libketamaHashDialTouched = true;
-        $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = self::normalizeLibketamaHashGetterValue($hash);
+        $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = LibketamaHashOptionParity::normalizeStoredKetamaHash($hash);
 
         return ClientOptionResult::success();
-    }
-
-    private static function normalizeLibketamaHashGetterValue(int $hash): int
-    {
-        return \in_array($hash, [
-            MemcachedConstants::HASH_DEFAULT,
-            MemcachedConstants::HASH_MD5,
-            MemcachedConstants::HASH_CRC,
-            MemcachedConstants::HASH_FNV1_64,
-            MemcachedConstants::HASH_FNV1A_64,
-            MemcachedConstants::HASH_FNV1_32,
-            MemcachedConstants::HASH_FNV1A_32,
-            MemcachedConstants::HASH_MURMUR,
-        ], true) ? $hash : MemcachedConstants::HASH_DEFAULT;
     }
 
     private static function applyPrefix(ClientCoreState $core, int $option, mixed $value, OptionEnvironment $env): ClientOptionResult

@@ -16,85 +16,69 @@ use PureCache\MemcachedConstants;
  */
 final class LibketamaHashOptionParity
 {
-    private static ?bool $setterUpdatesStoredKetamaGetter = null;
-
-    private static ?bool $setterSurfacesCoercedGetterWithoutCompat = null;
+    private static ?bool $peclAliasesOptHashIntoKetamaGetter = null;
 
     /**
-     * When false, {@code getOption(OPT_LIBKETAMA_HASH)} should read-alias
-     * {@code OPT_HASH}; when true, return the stored ketama dial.
+     * Detects whether the loaded ext-memcached/libmemcached pair makes
+     * {@code getOption(OPT_LIBKETAMA_HASH)} read-alias {@code OPT_HASH}, or
+     * keeps {@code MEMCACHED_BEHAVIOR_HASH} and
+     * {@code MEMCACHED_BEHAVIOR_KETAMA_HASH} as two independent slots.
+     *
+     * Older macOS libmemcached builds alias (the getter always tracks
+     * {@code OPT_HASH}, even after {@code setOption(OPT_LIBKETAMA_HASH)} is
+     * called). Linux libmemcached 1.x keeps the slots independent and
+     * returns {@code HASH_DEFAULT} until the ketama dial is explicitly
+     * written.
      */
-    public static function libketamaGetterUsesStoredSlot(ClientCoreState $core): bool
+    public static function peclAliasesOptHashIntoKetamaGetter(): bool
     {
-        $libketamaCompatible = (bool) ($core->options[MemcachedConstants::OPT_LIBKETAMA_COMPATIBLE] ?? false);
-
-        if (!$libketamaCompatible) {
-            if (!$core->libketamaHashDialTouched) {
-                return false;
-            }
-
-            return self::setterSurfacesCoercedGetterWithoutCompat();
+        if (null !== self::$peclAliasesOptHashIntoKetamaGetter) {
+            return self::$peclAliasesOptHashIntoKetamaGetter;
         }
 
-        return self::setterUpdatesStoredKetamaGetter();
+        if (!\extension_loaded('memcached') || !class_exists(\Memcached::class, false)) {
+            return self::$peclAliasesOptHashIntoKetamaGetter = false;
+        }
+
+        $client = new \Memcached();
+        $client->setOption(\Memcached::OPT_HASH, MemcachedConstants::HASH_CRC);
+
+        return self::$peclAliasesOptHashIntoKetamaGetter =
+            MemcachedConstants::HASH_CRC === $client->getOption(\Memcached::OPT_LIBKETAMA_HASH);
     }
 
     /**
-     * Resolved {@code getOption(OPT_LIBKETAMA_HASH)} for a PureCache client.
+     * Resolved {@code getOption(OPT_LIBKETAMA_HASH)} for a PureCache client:
+     * read-aliases {@code OPT_HASH} on libmemcached builds that fold the two
+     * behaviors together, otherwise returns the stored ketama dial.
      */
     public static function resolveLibketamaHashGetter(ClientCoreState $core): int
     {
-        if (!self::libketamaGetterUsesStoredSlot($core)) {
+        if (self::peclAliasesOptHashIntoKetamaGetter()) {
             return $core->optionInt(MemcachedConstants::OPT_HASH, MemcachedConstants::HASH_DEFAULT);
         }
 
         return $core->optionInt(MemcachedConstants::OPT_LIBKETAMA_HASH, MemcachedConstants::HASH_DEFAULT);
     }
 
-    public static function setterUpdatesStoredKetamaGetter(): bool
+    /**
+     * libmemcached's hashkit setter accepts every documented {@code HASH_*}
+     * id and silently maps out-of-range / negative values back to
+     * {@code HASH_DEFAULT}. PureCache mirrors that normalization in its
+     * stored {@code OPT_LIBKETAMA_HASH} slot so the getter matches PECL.
+     */
+    public static function normalizeStoredKetamaHash(int $hash): int
     {
-        if (null !== self::$setterUpdatesStoredKetamaGetter) {
-            return self::$setterUpdatesStoredKetamaGetter;
-        }
-
-        if (!\extension_loaded('memcached') || !class_exists(\Memcached::class, false)) {
-            self::$setterUpdatesStoredKetamaGetter = false;
-
-            return self::$setterUpdatesStoredKetamaGetter;
-        }
-
-        $client = new \Memcached();
-        $client->setOption(\Memcached::OPT_LIBKETAMA_COMPATIBLE, true);
-        $client->setOption(\Memcached::OPT_LIBKETAMA_HASH, MemcachedConstants::HASH_MURMUR);
-
-        self::$setterUpdatesStoredKetamaGetter =
-            MemcachedConstants::HASH_MURMUR === $client->getOption(\Memcached::OPT_LIBKETAMA_HASH)
-            && MemcachedConstants::HASH_MD5 === $client->getOption(\Memcached::OPT_HASH);
-
-        return self::$setterUpdatesStoredKetamaGetter;
-    }
-
-    public static function setterSurfacesCoercedGetterWithoutCompat(): bool
-    {
-        if (null !== self::$setterSurfacesCoercedGetterWithoutCompat) {
-            return self::$setterSurfacesCoercedGetterWithoutCompat;
-        }
-
-        if (!\extension_loaded('memcached') || !class_exists(\Memcached::class, false)) {
-            self::$setterSurfacesCoercedGetterWithoutCompat = false;
-
-            return self::$setterSurfacesCoercedGetterWithoutCompat;
-        }
-
-        $client = new \Memcached();
-        $client->setOption(\Memcached::OPT_HASH, MemcachedConstants::HASH_MURMUR);
-        $client->setOption(\Memcached::OPT_LIBKETAMA_HASH, MemcachedConstants::HASH_MD5);
-
-        self::$setterSurfacesCoercedGetterWithoutCompat =
-            MemcachedConstants::HASH_MD5 === $client->getOption(\Memcached::OPT_LIBKETAMA_HASH)
-            && MemcachedConstants::HASH_MURMUR === $client->getOption(\Memcached::OPT_HASH);
-
-        return self::$setterSurfacesCoercedGetterWithoutCompat;
+        return \in_array($hash, [
+            MemcachedConstants::HASH_DEFAULT,
+            MemcachedConstants::HASH_MD5,
+            MemcachedConstants::HASH_CRC,
+            MemcachedConstants::HASH_FNV1_64,
+            MemcachedConstants::HASH_FNV1A_64,
+            MemcachedConstants::HASH_FNV1_32,
+            MemcachedConstants::HASH_FNV1A_32,
+            MemcachedConstants::HASH_MURMUR,
+        ], true) ? $hash : MemcachedConstants::HASH_DEFAULT;
     }
 
     /**
@@ -113,9 +97,10 @@ final class LibketamaHashOptionParity
             return self::readPeclOptionAsInt($client, \Memcached::OPT_LIBKETAMA_HASH, $anchoredHash);
         }
 
-        return self::setterSurfacesCoercedGetterWithoutCompat()
-            ? ClientOptions::peclLongValue($value)
-            : $anchoredHash;
+        // No ext-memcached loaded: PureCache stores the normalized coerced
+        // value in its own OPT_LIBKETAMA_HASH slot and the getter reads it
+        // back (the no-ext probe answers "independent slots").
+        return self::normalizeStoredKetamaHash(ClientOptions::peclLongValue($value));
     }
 
     private static function readPeclOptionAsInt(\Memcached $client, int $option, int $fallback): int
