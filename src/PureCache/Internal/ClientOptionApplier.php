@@ -165,10 +165,10 @@ final class ClientOptionApplier
         }
 
         $core->options[$option] = $integer;
-        if (
-            MemcachedConstants::OPT_HASH === $option
-            && LibketamaHashOptionParity::setterUpdatesStoredKetamaGetter()
-        ) {
+        if (MemcachedConstants::OPT_HASH === $option) {
+            // PECL always mirrors OPT_HASH into the ketama getter on hash changes;
+            // only the post-LIBKETAMA_COMPATIBLE setOption(OPT_LIBKETAMA_HASH) dial
+            // diverges between ext-memcached builds (see LibketamaHashOptionParity).
             $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = $integer;
         }
 
