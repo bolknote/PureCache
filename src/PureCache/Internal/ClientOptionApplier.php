@@ -42,7 +42,7 @@ final class ClientOptionApplier
         }
 
         if (MemcachedConstants::OPT_LIBKETAMA_HASH === $option) {
-            return self::applyLibketamaHash($value);
+            return self::applyLibketamaHash($core, $value);
         }
 
         if (self::isFailoverBooleanOption($option)) {
@@ -165,6 +165,13 @@ final class ClientOptionApplier
         }
 
         $core->options[$option] = $integer;
+        if (
+            MemcachedConstants::OPT_HASH === $option
+            && LibketamaHashOptionParity::setterUpdatesStoredKetamaGetter()
+        ) {
+            $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = $integer;
+        }
+
         $selectorSetter($integer);
         $env->onPoolInvalidated();
 
@@ -185,18 +192,22 @@ final class ClientOptionApplier
      *     PECL builds without ({@code HAVE_HSIEH_HASH=disabled}) and the
      *     hashkit setter therefore rejects with {@code INVALID_ARGUMENT}.
      *
-     * Empirically the dial does not move keys around ({@code getOption()} reads
-     * libmemcached's separate {@code MEMCACHED_BEHAVIOR_KETAMA_HASH} state, not
-     * {@code OPT_HASH}; routing is driven by {@code OPT_HASH}). PureCache mirrors that contract:
-     * coerce through {@see ClientOptions::peclLongValue()}, reject HSIEH,
-     * return success for everything else with no observable state change.
+     * Empirically the dial does not move keys around (routing is driven by
+     * {@code OPT_HASH}). On ext-memcached 3.4.x the getter keeps tracking
+     * {@code OPT_HASH}; on older builds it surfaces the coerced ketama value.
+     * PureCache mirrors the loaded extension via
+     * {@see LibketamaHashOptionParity::setterUpdatesStoredKetamaGetter()}.
      */
-    private static function applyLibketamaHash(mixed $value): ClientOptionResult
+    private static function applyLibketamaHash(ClientCoreState $core, mixed $value): ClientOptionResult
     {
         $hash = ClientOptions::peclLongValue($value);
 
         if (MemcachedConstants::HASH_HSIEH === $hash) {
             return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
+        }
+
+        if (LibketamaHashOptionParity::setterUpdatesStoredKetamaGetter()) {
+            $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = $hash;
         }
 
         return ClientOptionResult::success();
