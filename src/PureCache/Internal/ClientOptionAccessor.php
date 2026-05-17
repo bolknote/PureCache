@@ -23,11 +23,8 @@ final readonly class ClientOptionAccessor
 
     public function get(int $option): mixed
     {
-        if (
-            MemcachedConstants::OPT_LIBKETAMA_HASH === $option
-            && !LibketamaHashOptionParity::libketamaGetterUsesStoredSlot($this->env->core)
-        ) {
-            $option = MemcachedConstants::OPT_HASH;
+        if (MemcachedConstants::OPT_LIBKETAMA_HASH === $option) {
+            return LibketamaHashOptionParity::resolveLibketamaHashGetter($this->env->core);
         }
 
         $value = $this->env->core->options[$option] ?? null;

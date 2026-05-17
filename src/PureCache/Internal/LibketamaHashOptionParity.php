@@ -39,6 +39,18 @@ final class LibketamaHashOptionParity
         return self::setterUpdatesStoredKetamaGetter();
     }
 
+    /**
+     * Resolved {@code getOption(OPT_LIBKETAMA_HASH)} for a PureCache client.
+     */
+    public static function resolveLibketamaHashGetter(ClientCoreState $core): int
+    {
+        if (!self::libketamaGetterUsesStoredSlot($core)) {
+            return $core->optionInt(MemcachedConstants::OPT_HASH, MemcachedConstants::HASH_DEFAULT);
+        }
+
+        return $core->optionInt(MemcachedConstants::OPT_LIBKETAMA_HASH, MemcachedConstants::HASH_DEFAULT);
+    }
+
     public static function setterUpdatesStoredKetamaGetter(): bool
     {
         if (null !== self::$setterUpdatesStoredKetamaGetter) {

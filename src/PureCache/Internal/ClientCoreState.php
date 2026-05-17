@@ -75,6 +75,7 @@ abstract class ClientCoreState
         $this->selector->setFailureTracker($this->failureTracker);
 
         $this->options = ClientOptions::defaults();
+        $this->libketamaHashDialTouched = false;
         $this->resultCode = MemcachedConstants::RES_SUCCESS;
         $this->resultMessage = '';
     }
