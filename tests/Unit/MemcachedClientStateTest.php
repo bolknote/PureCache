@@ -542,6 +542,36 @@ final class MemcachedClientStateTest extends TestCase
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
     }
 
+    public function testLibketamaHashSetterNormalizesOutOfRangeValuesWhenPeclSurfacesStoredDial(): void
+    {
+        $surfacesStoredDial = new \ReflectionProperty(
+            LibketamaHashOptionParity::class,
+            'setterSurfacesCoercedGetterWithoutCompat',
+        );
+        $previous = $surfacesStoredDial->getValue();
+        $surfacesStoredDial->setValue(null, true);
+
+        try {
+            foreach ([9999, -3] as $value) {
+                $client = new MemcachedClient();
+                self::assertTrue($client->setOption(MemcachedClient::OPT_HASH, MemcachedClient::HASH_MURMUR));
+                self::assertTrue($client->setOption(MemcachedClient::OPT_LIBKETAMA_HASH, $value));
+                self::assertSame(
+                    MemcachedClient::HASH_DEFAULT,
+                    $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH),
+                );
+
+                self::assertTrue($client->setOption(MemcachedClient::OPT_HASH, MemcachedClient::HASH_CRC));
+                self::assertSame(
+                    MemcachedClient::HASH_CRC,
+                    $client->getOption(MemcachedClient::OPT_LIBKETAMA_HASH),
+                );
+            }
+        } finally {
+            $surfacesStoredDial->setValue(null, $previous);
+        }
+    }
+
     /**
      * Behavioural anchor for the "no-op setter" claim: a real
      * three-server ring keeps the same key→shard mapping across a series

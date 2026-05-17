@@ -195,10 +195,11 @@ final class ClientOptionApplier
      *     instead of being rejected;
      *  2. forwards the coerced long to libmemcached's
      *     {@code MEMCACHED_BEHAVIOR_KETAMA_HASH}, whose hashkit backend
-     *     accepts every documented {@code HASH_*} id and silently accepts
-     *     out-of-range values like 9999 — except {@code HASH_HSIEH}, which
-     *     PECL builds without ({@code HAVE_HSIEH_HASH=disabled}) and the
-     *     hashkit setter therefore rejects with {@code INVALID_ARGUMENT}.
+     *     accepts every documented {@code HASH_*} id and silently maps
+     *     out-of-range values back to {@code HASH_DEFAULT} — except
+     *     {@code HASH_HSIEH}, which PECL builds without
+     *     ({@code HAVE_HSIEH_HASH=disabled}) and the hashkit setter therefore
+     *     rejects with {@code INVALID_ARGUMENT}.
      *
      * Empirically the dial does not move keys around (routing is driven by
      * {@code OPT_HASH}). On ext-memcached 3.4.x the getter keeps tracking
@@ -215,9 +216,23 @@ final class ClientOptionApplier
         }
 
         $core->libketamaHashDialTouched = true;
-        $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = $hash;
+        $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = self::normalizeLibketamaHashGetterValue($hash);
 
         return ClientOptionResult::success();
+    }
+
+    private static function normalizeLibketamaHashGetterValue(int $hash): int
+    {
+        return \in_array($hash, [
+            MemcachedConstants::HASH_DEFAULT,
+            MemcachedConstants::HASH_MD5,
+            MemcachedConstants::HASH_CRC,
+            MemcachedConstants::HASH_FNV1_64,
+            MemcachedConstants::HASH_FNV1A_64,
+            MemcachedConstants::HASH_FNV1_32,
+            MemcachedConstants::HASH_FNV1A_32,
+            MemcachedConstants::HASH_MURMUR,
+        ], true) ? $hash : MemcachedConstants::HASH_DEFAULT;
     }
 
     private static function applyPrefix(ClientCoreState $core, int $option, mixed $value, OptionEnvironment $env): ClientOptionResult
