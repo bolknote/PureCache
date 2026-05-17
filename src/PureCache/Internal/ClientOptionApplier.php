@@ -122,6 +122,7 @@ final class ClientOptionApplier
 
     private static function applyLibketamaCompatible(ClientCoreState $core, bool $enabled): void
     {
+        $core->libketamaHashDialTouched = false;
         $core->options[MemcachedConstants::OPT_LIBKETAMA_COMPATIBLE] = $enabled;
         $core->selector->setLibketamaCompatible($enabled);
         if ($enabled) {
@@ -166,9 +167,9 @@ final class ClientOptionApplier
 
         $core->options[$option] = $integer;
         if (MemcachedConstants::OPT_HASH === $option) {
-            // PECL always mirrors OPT_HASH into the ketama getter on hash changes;
-            // only the post-LIBKETAMA_COMPATIBLE setOption(OPT_LIBKETAMA_HASH) dial
-            // diverges between ext-memcached builds (see LibketamaHashOptionParity).
+            // PECL mirrors OPT_HASH into the ketama getter on hash changes until
+            // setOption(OPT_LIBKETAMA_HASH) touches the dial (LibketamaHashOptionParity).
+            $core->libketamaHashDialTouched = false;
             $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = $integer;
         }
 
@@ -206,6 +207,7 @@ final class ClientOptionApplier
             return ClientOptionResult::failure(MemcachedConstants::RES_INVALID_ARGUMENTS);
         }
 
+        $core->libketamaHashDialTouched = true;
         $core->options[MemcachedConstants::OPT_LIBKETAMA_HASH] = $hash;
 
         return ClientOptionResult::success();

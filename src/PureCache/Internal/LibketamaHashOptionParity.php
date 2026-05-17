@@ -23,15 +23,20 @@ final class LibketamaHashOptionParity
     /**
      * When false, {@code getOption(OPT_LIBKETAMA_HASH)} should read-alias
      * {@code OPT_HASH}; when true, return the stored ketama dial.
-     *
-     * Which PECL probe applies depends on whether
-     * {@code OPT_LIBKETAMA_COMPATIBLE} is already enabled on the client.
      */
-    public static function libketamaGetterUsesStoredSlot(bool $libketamaCompatibleEnabled): bool
+    public static function libketamaGetterUsesStoredSlot(ClientCoreState $core): bool
     {
-        return $libketamaCompatibleEnabled
-            ? self::setterUpdatesStoredKetamaGetter()
-            : self::setterSurfacesCoercedGetterWithoutCompat();
+        $libketamaCompatible = (bool) ($core->options[MemcachedConstants::OPT_LIBKETAMA_COMPATIBLE] ?? false);
+
+        if (!$libketamaCompatible) {
+            if (!$core->libketamaHashDialTouched) {
+                return false;
+            }
+
+            return self::setterSurfacesCoercedGetterWithoutCompat();
+        }
+
+        return self::setterUpdatesStoredKetamaGetter();
     }
 
     public static function setterUpdatesStoredKetamaGetter(): bool
@@ -93,14 +98,23 @@ final class LibketamaHashOptionParity
             $client->setOption(\Memcached::OPT_HASH, $anchoredHash);
             $client->setOption(\Memcached::OPT_LIBKETAMA_HASH, $value);
 
-            $getter = $client->getOption(\Memcached::OPT_LIBKETAMA_HASH);
-            $integer = ClientOptions::intValue($getter);
-
-            return $integer ?? $anchoredHash;
+            return self::readPeclOptionAsInt($client, \Memcached::OPT_LIBKETAMA_HASH, $anchoredHash);
         }
 
-        return self::libketamaGetterUsesStoredSlot(false)
+        return self::setterSurfacesCoercedGetterWithoutCompat()
             ? ClientOptions::peclLongValue($value)
             : $anchoredHash;
+    }
+
+    private static function readPeclOptionAsInt(\Memcached $client, int $option, int $fallback): int
+    {
+        $raw = $client->getOption($option);
+        if (\is_int($raw)) {
+            return $raw;
+        }
+
+        $coerced = ClientOptions::intValue($raw);
+
+        return $coerced ?? $fallback;
     }
 }
