@@ -9,6 +9,7 @@
     findUnusedCode="true"
     phpVersion="8.3.0"
     cacheDirectory="../cache/psalm"
+    threads="2"
 >
     <projectFiles>
         <directory name="../src"/>

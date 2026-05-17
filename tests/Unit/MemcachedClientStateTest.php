@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use PureCache\AbstractCacheClient;
 use PureCache\Internal\CacheEntry;
 use PureCache\Internal\ClientOptions;
+use PureCache\Internal\IniConfig;
 use PureCache\Memcached\MemcachedClient;
 
 final class MemcachedClientStateTest extends TestCase
@@ -190,7 +191,7 @@ final class MemcachedClientStateTest extends TestCase
         $client = new MemcachedClient();
 
         self::assertTrue($client->getOption(MemcachedClient::OPT_COMPRESSION));
-        self::assertSame(ClientOptions::defaultSerializer(), $client->getOption(MemcachedClient::OPT_SERIALIZER));
+        self::assertSame(IniConfig::snapshot()['serializer'], $client->getOption(MemcachedClient::OPT_SERIALIZER));
 
         self::assertTrue($client->setOption(MemcachedClient::OPT_PREFIX_KEY, 'prefix:'));
         self::assertSame('prefix:', $client->getOption(MemcachedClient::OPT_PREFIX_KEY));
@@ -237,7 +238,7 @@ final class MemcachedClientStateTest extends TestCase
 
         self::assertFalse($client->setOption(MemcachedClient::OPT_SERIALIZER, 999));
         self::assertSame(MemcachedClient::RES_INVALID_ARGUMENTS, $client->getResultCode());
-        self::assertSame(ClientOptions::defaultSerializer(), $client->getOption(MemcachedClient::OPT_SERIALIZER));
+        self::assertSame(IniConfig::snapshot()['serializer'], $client->getOption(MemcachedClient::OPT_SERIALIZER));
 
         self::assertFalse($client->setOption(MemcachedClient::OPT_COMPRESSION_TYPE, 999));
         self::assertSame(38, $client->getResultCode());

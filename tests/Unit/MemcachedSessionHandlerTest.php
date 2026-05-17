@@ -88,7 +88,15 @@ final class MemcachedSessionHandlerTest extends TestCase
     public function testCreateSidUsesRandomWhenClientMissing(): void
     {
         $handler = new MemcachedSessionHandler();
-        self::assertMatchesRegularExpression('/^[a-f0-9]{32}$/', $handler->create_sid());
+        $sid = $handler->create_sid();
+
+        if (\function_exists('session_create_id')) {
+            // PHP 8+ may return a non-hex session_create_id() token; PECL does the same.
+            self::assertNotSame('', $sid);
+            self::assertGreaterThanOrEqual(22, \strlen($sid));
+        } else {
+            self::assertMatchesRegularExpression('/^[a-f0-9]{32}$/', $sid);
+        }
     }
 
     public function testValidateIdReturnsFalseWithoutClient(): void

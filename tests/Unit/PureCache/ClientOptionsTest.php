@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use PureCache\CacheClient;
 use PureCache\Ignite\IgniteClient;
 use PureCache\Internal\ClientOptions;
+use PureCache\Internal\IniConfig;
 use PureCache\Memcached\MemcachedClient;
 use PureCache\MemcachedConstants;
 use PureCache\Redis\RedisClient;
@@ -53,12 +54,15 @@ final class ClientOptionsTest extends TestCase
         self::assertSame(ClientOptions::defaultSerializer(), $defaults[MemcachedConstants::OPT_SERIALIZER]);
     }
 
-    public function testFreshMemcachedClientReportsPeclStyleDefaultSerializer(): void
+    public function testFreshMemcachedClientReportsIniBackedDefaultSerializer(): void
     {
         $client = new MemcachedClient();
 
+        // MemcachedClient applies memcached.* INI via IniConfig::snapshot() on
+        // construct; that may differ from ClientOptions::defaultSerializer()
+        // when php.ini pins memcached.serializer=php while ext-igbinary is loaded.
         self::assertSame(
-            ClientOptions::defaultSerializer(),
+            IniConfig::snapshot()['serializer'],
             $client->getOption(MemcachedClient::OPT_SERIALIZER),
         );
     }

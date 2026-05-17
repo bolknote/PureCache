@@ -29,12 +29,15 @@ if (!is_dir($coverageXml) && !mkdir($coverageXml, 0o755, true) && !is_dir($cover
 }
 
 $php = \PHP_BINARY;
-$phpIni = '-d memory_limit=1G -d error_reporting='.(string) (\E_ALL & ~\E_DEPRECATED & ~\E_USER_DEPRECATED);
+$errorReporting = (string) (\E_ALL & ~\E_DEPRECATED & ~\E_USER_DEPRECATED);
 
 $phpunit = $root.'/vendor/bin/phpunit';
 $coverageCommand = implode(' ', array_map('escapeshellarg', [
     $php,
-    $phpIni,
+    '-d',
+    'memory_limit=1G',
+    '-d',
+    'error_reporting='.$errorReporting,
     $phpunit,
     '--configuration='.$root.'/config/phpunit-coverage.xml',
     '--coverage-xml='.$coverageXml,
@@ -62,7 +65,10 @@ if (!is_file($coverageXml.'/index.xml') || !is_file($coverageXml.'/junit.xml')) 
 $infection = $root.'/vendor/bin/infection';
 $infectionCommand = implode(' ', array_map('escapeshellarg', [
     $php,
-    $phpIni,
+    '-d',
+    'memory_limit=1G',
+    '-d',
+    'error_reporting='.$errorReporting,
     $infection,
     '--configuration='.$root.'/infection.json',
     '--coverage='.$coverageXml,

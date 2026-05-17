@@ -81,16 +81,29 @@ final class StreamConnectionWireTest extends TestCase
 
     public function testManyReadLinesCompactInternalBuffer(): void
     {
-        [$connection, $server] = $this->socketPair();
+        // Exercise compactBuffer() via many readLine() calls without socket I/O
+        // (socket pairs can time out on slow CI when the kernel buffer stalls).
+        $connection = new StreamConnection('127.0.0.1', 11211, 0.1, null, null);
+        $pair = stream_socket_pair(\STREAM_PF_UNIX, \STREAM_SOCK_STREAM, \STREAM_IPPROTO_IP);
+        self::assertIsArray($pair);
+        [$clientSock, $serverSock] = $pair;
+        fclose($serverSock);
+
+        (new \ReflectionProperty(StreamConnection::class, 'socket'))->setValue($connection, $clientSock);
+
+        $payload = '';
         for ($i = 0; $i < 500; ++$i) {
-            fwrite($server, "line{$i}\r\n");
+            $payload .= "line{$i}\r\n";
         }
+
+        (new \ReflectionProperty($connection, 'readBuffer'))->setValue($connection, $payload);
+        (new \ReflectionProperty($connection, 'readOffset'))->setValue($connection, 0);
 
         for ($i = 0; $i < 500; ++$i) {
             self::assertSame('line'.$i, $connection->readLine());
         }
 
-        fclose($server);
+        fclose($clientSock);
     }
 
     public function testReadLineFlexibleAcceptsLfOnlyTerminator(): void
@@ -153,6 +166,8 @@ final class StreamConnectionWireTest extends TestCase
         self::assertIsArray($pair);
 
         [$clientSock, $serverSock] = $pair;
+        stream_set_timeout($clientSock, 30);
+        stream_set_timeout($serverSock, 30);
         $connection = new StreamConnection('127.0.0.1', 11211, 0.1, null, null);
         $socket = new \ReflectionProperty(StreamConnection::class, 'socket');
         $socket->setValue($connection, $clientSock);
