@@ -108,13 +108,6 @@ final class LibketamaHashOptionParity
 
     private static function readPeclOptionAsInt(\Memcached $client, int $option, int $fallback): int
     {
-        $raw = $client->getOption($option);
-        if (\is_int($raw)) {
-            return $raw;
-        }
-
-        $coerced = ClientOptions::intValue($raw);
-
-        return $coerced ?? $fallback;
+        return ClientOptions::intValue($client->getOption($option)) ?? $fallback;
     }
 }
